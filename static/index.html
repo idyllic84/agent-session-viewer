@@ -21,10 +21,13 @@
                 <select id="projectSelect"><option value="">All projects</option></select>
                 <div class="filter-label">Search:</div>
                 <div class="uuid-search">
-                    <input type="text" id="sessionSearch" placeholder="Search sessions (press Enter)..." />
+                    <input type="search" id="sessionSearch" placeholder="Search user/assistant content…" aria-label="Search sessions by user and assistant prose" />
+                    <button id="sessionSearchBtn" title="Search sessions">Search</button>
                     <button id="clearSessionSearchBtn" class="clear-btn" title="Clear search">×</button>
                 </div>
             </div>
+            <div class="sync-status" id="sessionSearchStatus" role="status" aria-live="polite"></div>
+            <button id="resetSearchScopeBtn" class="scope-reset" hidden>Search all sources/projects</button>
             <div class="sync-status" id="syncStatus" role="status">Local history only. Click Reload to import.</div>
             <details id="syncIssues" class="sync-status" hidden><summary>Sync issues</summary><pre id="syncIssueText"></pre></details>
             <div class="panel-content">
@@ -53,7 +56,7 @@
                     <!-- Filter tags will be dynamically added here -->
                 </div>
                 <div class="uuid-search">
-                    <input type="text" id="uuidSearch" placeholder="Search loaded messages (Enter)..." />
+                    <input type="text" id="uuidSearch" placeholder="Find in this session’s loaded messages…" title="This searches only loaded messages. Use the left search box to find sessions globally." />
                     <button id="clearUuidBtn" class="clear-btn" title="Clear search">×</button>
                 </div>
             </div>
@@ -64,7 +67,7 @@
                     </div>
                 </div>
             </div>
-            <button id="loadMoreBtn" class="load-more" hidden>Load next 200 records</button>
+            <button id="loadMoreBtn" class="load-more" hidden>Load next 2000 records</button>
         </div>
 
         <!-- Resizer between middle and right -->

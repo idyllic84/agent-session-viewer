@@ -1,4 +1,4 @@
-from models import SessionDocument, blocks
+from models import SessionDocument, blocks, searchable_text
 from .base import SourceAdapter, SourceError, read_records
 
 
@@ -8,18 +8,23 @@ class PiAdapter(SourceAdapter):
 
     def parse(self, entry):
         records, warnings = read_records(entry.path)
-        if not records or records[0][1].get('type') != 'session':
+        return self.project_records(entry, records, warnings)
+
+    def project_records(self, entry, records, warnings=(), seed=None):
+        if seed is None and (not records or records[0][1].get('type') != 'session'):
             raise SourceError('Missing pi session header')
-        header = records[0][1]
+        header = seed['header'] if seed else records[0][1]
         version = header.get('version', 1)
         if version not in (1, 2, 3):
             raise SourceError(f'Unsupported pi format version: {version}')
         doc = SessionDocument(self.source, str(header.get('id') or entry.path.stem),
-                              str(header.get('cwd') or ''), records, warnings=warnings)
+                              str(header.get('cwd') or ''), records, warnings=list(warnings),
+                              name=seed.get('name', '') if seed else '')
         doc.metadata.update(formatVersion=version, parentSessionPath=header.get('parentSession'))
-        contexts = {}
-        previous = None
-        for index, row in records[1:]:
+        contexts = dict(seed.get('contexts', {})) if seed else {}
+        previous = seed.get('previous') if seed else None
+        fallback_name = seed.get('fallbackName', '') if seed else ''
+        for index, row in (records if seed else records[1:]):
             kind = row.get('type', 'unknown')
             eid = row.get('id') or f'legacy-{index}'
             parent = row.get('parentId', previous if version == 1 else None)
@@ -60,4 +65,12 @@ class PiAdapter(SourceAdapter):
                         model=model, provider=provider)
             contexts[eid] = (model, provider)
         doc.metadata['defaultLeaf'] = previous
-        return doc.finish()
+        if not fallback_name:
+            fallback_name = next((searchable_text(m['message']['content']).replace('\n', ' ')[:160]
+                                  for m in doc.messages if m['type']=='user'), doc.external_id)
+        if not doc.name:
+            doc.name = fallback_name
+        doc.finish()
+        doc.sync_state = {'kind': 'pi', 'header': header, 'contexts': contexts, 'previous': previous,
+                          'name': doc.name, 'fallbackName': fallback_name}
+        return doc

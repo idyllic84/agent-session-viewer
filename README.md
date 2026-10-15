@@ -15,9 +15,27 @@ python server.py
 
 The server **automatically syncs local history before listening**, as the original
 ClaudeViewer did. Open **http://localhost:8000** after the startup sync completes.
-The console prints scan/import counts and the current file. The first import can
-take a while for large archives; previously committed sessions are preserved.
-Later reloads reuse unchanged projections; changed sessions are rebuilt transactionally.
+Files are handled strictly one at a time: discover a path, look up its archived
+session/checkpoint, read new content, commit data and checkpoint, then ask the
+discovery iterator for the next path. There is no batching, file-path prefetch,
+full-corpus scan/import barrier or temporary projection spool.
+Every file prints a start line and a final status/duration, including unchanged,
+recently skipped, duplicate and failed files. Expensive steps print a heartbeat
+every 5 seconds with current file, step and elapsed time; no transcript content
+is logged. This applies to startup sync as well as Reload.
+
+All sources reuse unchanged projections and have incremental update paths:
+Claude/pi append entries, Codex/Copilot update affected turns, and VS Code replays
+new operations and updates only affected requests. A first import/checkpoint
+initialization can still take a while; completed per-session transactions remain
+available even if a later file fails.
+
+By default, files modified **less than one hour ago are skipped**, before hashing
+or reading their bodies. Existing indexed history remains visible and its sync
+checkpoint is not advanced. Once a file has been quiet for an hour, the next sync
+resumes from that checkpoint. A recently changed workspace sidecar also defers
+the associated transcript. Files changed during processing are likewise deferred;
+`skippedRecent` is reported separately from unchanged files and failures.
 
 **Reload** starts a background job and displays live phase, counts, current file
 and elapsed time. Refreshing the page reconnects to that job instead of starting
@@ -27,17 +45,55 @@ another one. Already committed history remains browsable during a reload.
 python server.py --port 8001  # choose another port if 8000 is occupied
 python server.py --no-sync    # explicitly skip startup sync and browse the existing archive
 python server.py --debug      # development mode, without the double-import reloader
+python server.py --include-recent  # explicit override of the one-hour quiet period
 ```
 
 The current archive is **`viewer.db` (schema v2)**. Your existing **`claude.db` is
-preserved and is not automatically migrated. An older schema-v1 `viewer.db`
-requires the explicit rebuild below; it is never silently overwritten.
+preserved and is not automatically migrated. Use the explicit legacy migration
+below to recover sessions that survive only in that database. An older schema-v1
+`viewer.db` requires the explicit rebuild below; it is never silently overwritten.
 Agent history files are never modified, and
 all source deletion endpoints are disabled, including Claude deletion.
 The UI reports import errors without discarding the last successful projection.
 Active JSONL files may keep appending: the importer validates the exact byte prefix
 it read, commits that snapshot, and picks up later appended records on the next
 sync. Rewrites or truncation of that prefix are still rejected.
+
+## Migrating the old Claude-only archive
+
+Stop the viewer, then run:
+
+```bash
+python migrate_legacy.py
+# Optional trusted local paths:
+python migrate_legacy.py --source /path/to/claude.db --database /path/to/viewer.db
+```
+
+The migration reads the old database in read-only mode and processes one session
+at a time. Missing non-subagent sessions are inserted into a staged copy of the
+viewer archive. Existing sessions are never overwritten: every legacy raw value
+must already be covered by an existing native projection, otherwise validation
+fails rather than silently losing an older branch. Truly empty/subagent sessions
+are excluded; nonempty zero-user sessions are preserved but remain hidden.
+
+Legacy-only sessions retain all original records, record ordinals, old timestamp
+column values and provenance (`metadata.legacyArchive`). They are marked source
+unavailable, without inventing a JSONL file watermark or append checkpoint.
+They remain searchable/browsable; normal sync retains them and can reconcile
+against the original transcript if it reappears. Search still indexes only
+user/assistant prose, not system/tool payloads.
+
+Before switching, the command verifies all eligible legacy session IDs/raw
+records, byte-for-byte preservation of existing histories/checkpoints, SQLite,
+foreign keys, FTS, and the source database SHA-256. It refuses a running viewer or
+concurrent destination changes. Failure retains the original archive and the
+candidate; success retains `viewer.before-legacy-<timestamp>.db` as rollback
+backup and writes `viewer-legacy-migration-result.log`. Neither Agent files nor
+`claude.db` are modified. Repeating the migration does not duplicate sessions.
+
+A later rebuild from current source files alone cannot recover these legacy-only
+sessions; the normal missing-session safety check will refuse to discard them.
+Keep `claude.db` and/or the migration backup.
 
 ## Rebuilding an older viewer index
 
@@ -79,15 +135,52 @@ history; do not discard a backup that is your only copy.
   is extracted once into tool-result records, paired only by stable call IDs.
   Unpaired outputs remain separate and explicitly marked; the full original
   metadata/rounds/rendered context stays in the raw archive.
-- Changed projections are parsed/replayed once and spooled in a private,
-  compressed, per-job cache. Only authenticated cache bytes produced by that
-  job are deserialized; the cache is removed on completion/failure.
+- VS Code markdown and inline-reference chips are concatenated in their original
+  order into assistant prose, preserving spaces/newlines and symbol labels.
+  Reference targets and contributing `chunkIndices` remain in normalized metadata.
+  Text is not merged across tools/thinking events or request boundaries; unresolved
+  references get an explicit placeholder/warning rather than disappearing.
+  Parser v3 automatically refreshes older VS Code projections on the next sync;
+  a database/schema rebuild is not needed for this correction.
+- Claude Code has a source-specific byte/physical-line checkpoint. Appends parse
+  only the tail and insert only new rows/text mappings; existing raw blobs and
+  message IDs are not rewritten. Truncation, rewritten history, changed parser
+  rules or inconsistent archive sequences fall back to full reconciliation.
+  Existing complete Claude archives acquire checkpoints without re-decoding old
+  JSON. A torn/newline-incomplete tail is deferred rather than imported twice.
+  Old bytes are still hashed to verify the prefix; this is incremental parsing
+  and indexing, not a promise of zero reads of existing file bytes.
+- pi restores persisted parent/model/provider context and projects only new
+  entries, preserving saved branches, labels and session renames. Context edits
+  remain raw history events; they do not erase the original conversation.
+- Codex and Copilot CLI append raw records and reconcile only dirty native
+  turns/interactions. Late tool completion can update its older call/turn without
+  decoding/reprojecting unrelated closed turns. Canonical-format transitions may
+  legitimately affect additional units and are reconciled accordingly.
+- VS Code JSONL resumes at its verified byte/line cursor, restores only changed
+  request objects, and applies new Initial/Set/Push/Delete operations. Request
+  truncation/deletion and text/inline-reference regrouping update only affected
+  request projections. Plain JSON snapshots must be read as a whole because they
+  are not append logs, but request digests avoid normalizing/indexing unchanged
+  requests. Untouched message IDs and compressed payloads remain unchanged.
+- Parser state/request checkpoints and message/raw scope associations are stored
+  in additive schema-v2 tables, in the same transaction as projection/search and
+  file watermarks. Existing archives do not require rebuilding. A legacy session
+  without these checkpoints is initialized once when it next changes; there is
+  no forced reimport of every unchanged session just to install the new tables.
+  Rewrites, truncation, identity/parser changes or invalid checkpoints trigger
+  explicit single-file reconciliation, not an automatic whole-archive rebuild.
+- File discovery is lazy and strictly sequential: a file is committed, skipped or
+  reported failed before the iterator advances to the next file. Duplicate copies
+  are ranked against the current primary (newest nonempty wins), including copies
+  discovered later. Failed newer copies do not demote
+  a last-good archive to an older copy. Empty copies do not erase saved history.
 
 ## Supported sources
 
 | Source | Default location | Notes |
 | --- | --- | --- |
-| Claude Code | `~/.claude/projects/**/*.jsonl` | Main sessions and separate agent/subagent transcripts |
+| Claude Code | `~/.claude/projects/**/*.jsonl` | Main sessions only; agent/subagent transcripts are excluded |
 | Codex | `$CODEX_HOME/{sessions,archived_sessions}/**/*.jsonl` (`~/.codex` by default) | Legacy/paginated rollouts; explicit thread/turn ownership preserves historical subagent work even before migrated context boundaries |
 | Copilot CLI | `~/.copilot/session-state/**/events.jsonl` and legacy flat JSONL | Conversation and tool lifecycle events; model snapshots are not duplicated as chat |
 | pi | `~/.pi/agent/sessions/**/*.jsonl` | v1–v3, typed content, tree parent IDs and saved-branch view |
@@ -127,14 +220,34 @@ archive schemas are refused instead of migrated.
 ## Browsing
 
 - Source/project filters, session names, modification times and availability.
+- The left list shows **user messages / total messages**, for example `3 / 28`.
+  Sessions with **zero user messages are hidden**, even if they have assistant,
+  tool or system records. Nonempty zero-user history is retained and can resume
+  incrementally/become visible when a real user message arrives. Sync uses full
+  raw/message positions and logs total-record changes plus user counts separately.
+- Truly empty (0 total records) sessions and subagent sessions are not listed or imported.
+  Existing empty/subagent viewer indexes are cleaned at initialization/sync;
+  original agent files are never removed. Empty-file fingerprints are retained
+  to avoid repeatedly parsing/recreating an empty session. Normal forks are kept.
 - User/assistant text is shown by default; enable tool, thinking, summary and
   system filters to inspect other records. A message containing text and tools
   retains both instead of losing one content type.
-- Cross-session search covers names, projects and extracted message/tool text.
+- Cross-session search covers names, projects, native session IDs and readable
+  **user/assistant prose only** (including clear assistant thinking and inline
+  reference labels). System events, tool-call names/arguments, tool results and
+  raw metadata do not contribute to the session search index. These records are
+  still preserved and browsable; only the search scope is narrowed.
+  On the first startup with this policy, search text/mappings/FTS are rebuilt in
+  one transaction with progress logs; message bodies, raw records and sync
+  checkpoints are not reimported or changed. Later startups reuse the policy marker.
+  Typing searches after a short debounce; Enter and the Search button also work.
+  A changed query clears stale project selection, active source/project scope and
+  result count are shown, and one click searches all sources/projects. The middle
+  find box is explicitly limited to the current session's loaded messages.
   Position-free FTS5 trigram substring search is used when SQLite supports it;
   short queries and installations without that tokenizer use escaped literal `LIKE`, including
   two-character Chinese queries.
-- Messages load **200 records per page**. Use **Load next 200 records** to load
+- Messages load **2000 records per page**. Use **Load next 2000 records** to load
   more. The in-conversation search explicitly searches **loaded messages only**.
 - pi can switch between all physical records and the current saved branch.
 - Details show normalized content/metadata; **Load original record** lazily
@@ -166,8 +279,11 @@ all agents' native history tools:
   branch pickers for arbitrary pi leaves, watcher/SSE and export are follow-ups.
 - Synchronization runs automatically before startup and on Reload, not through a
   continuous watcher. Per-file content hashes detect rewrites, including
-  equal-size/equal-mtime edits. A first import captures candidate projections,
-  then imports winners from the private spool without replaying them a second time.
+  equal-size/equal-mtime edits. Prefix hashing still reads existing bytes for
+  integrity checks; incremental parsing does not mean zero disk reads. Only new
+  raw JSONL records and affected projection units are decoded/processed on the
+  incremental paths. Restoring a large VS Code request checkpoint can still cost
+  time, but unrelated requests and the old operation log are not replayed.
 - Schema v2 is independent of the old Claude-only database. V1 viewer archives
   require explicit rebuilding; future schema changes likewise must not silently
   overwrite existing archives.
@@ -177,7 +293,7 @@ all agents' native history tools:
 ```text
 GET  /api/sources
 GET  /api/sessions?source=&project=&q=&cursor=0&limit=100
-GET  /api/sessions/<id>/messages?cursor=0&limit=200&branch=active
+GET  /api/sessions/<id>/messages?cursor=0&limit=2000&branch=active
 GET  /api/messages/<message-id>/raw
 GET  /api/sessions/<id>/records?cursor=0&limit=50
 POST /api/sync/start   # returns 202 immediately; attaches to an existing job if busy
@@ -187,13 +303,20 @@ POST /api/sync        # blocking compatibility endpoint for scripts
 
 Pages return `items`, `total`, and `nextCursor` (`null` at the end). Message
 pages also include session metadata. IDs include the source namespace.
-Timestamps carry `timestampUnit: "ms"`.
+Timestamps carry `timestampUnit: "ms"`. Session objects expose both
+`messageCount` (all normalized records, used for synchronization/paging) and
+`userMessageCount` (actual user inputs, used by the left list).
 
 Completed sync results contain `added`, `updated`, `unchanged`, `failed`, `errors`,
-and `warnings`. The asynchronous start endpoint returns a status snapshot; poll
-`/api/sync/status` until `running` is false. The `progress` object distinguishes
-scanning source files from importing logical sessions, rather than claiming a
-misleading overall percentage. Concurrent async requests share the current job.
+`warnings`, `skippedRecent`, `skippedEmpty`, `skippedSubagents`,
+`removedEmpty`, `removedSubagents`, `appendedSessions`, `appendedMessages`,
+`incrementalSessions`, and `reprojectedScopes`. Incremental sessions also count as `updated`; scope counts
+identify dirty turns/requests rather than implying full-history reprocessing.
+The asynchronous start endpoint returns a status snapshot; poll `/api/sync/status`
+until `running` is false. Progress reports processed files, synced logical sessions,
+recent-file skips and the current file. The discovered total is
+not a claimed whole-corpus percentage while lazy discovery is still running.
+Concurrent async requests share the current job.
 Mutation requests require **`X-Viewer-Request: 1`** and, if present, a same-origin
 `Origin` header. No CORS is enabled. Host headers are restricted to loopback;
 trusted proxy hostnames can be explicitly added with comma-separated

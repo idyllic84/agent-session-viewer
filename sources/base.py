@@ -19,6 +19,10 @@ class SnapshotRecords(list):
         self.modified_ns = None
         self.dependencies = {}
         self.record_sizes = {}
+        self.safe_offset = 0
+        self.safe_next_line = 0
+        self.safe_digest = self.hasher.digest()
+        self.has_unterminated_value = False
 
     def __getstate__(self):
         state = dict(self.__dict__)
@@ -97,15 +101,31 @@ class SourceFile:
         return digest.hexdigest()
 
 
-def read_records(path):
-    """Keep physical line numbers. Defer a torn final record, fail bad complete rows."""
+def read_records(path, *, offset=0, next_line=0, prefix_hasher=None, require_newline=False):
+    """Read full JSONL or just its tail, retaining absolute line IDs and provenance."""
     records, warnings = SnapshotRecords(path), []
+    if offset:
+        if prefix_hasher is None:
+            raise SourceError('Tail reads require a verified prefix hash')
+        records.hasher = prefix_hasher.copy()
+        records.byte_count = offset
+        records.safe_offset = offset
+        records.safe_next_line = next_line
+        records.safe_digest = prefix_hasher.digest()
     with path.open('rb') as stream:
-        for index, line in enumerate(stream):
+        stream.seek(offset)
+        for index, line in enumerate(stream, start=next_line):
             records.hasher.update(line)
             records.byte_count += len(line)
             records.record_sizes[index] = len(line)
+            if require_newline and not line.endswith(b'\n'):
+                warnings.append(f'Trailing record at line {index + 1} is not newline-terminated; deferred until next sync')
+                break
             if not line.strip():
+                if line.endswith(b'\n'):
+                    records.safe_offset = records.byte_count
+                    records.safe_next_line = index + 1
+                    records.safe_digest = records.hasher.digest()
                 continue
             try:
                 value = json.loads(line.decode('utf-8-sig'))
@@ -117,6 +137,12 @@ def read_records(path):
             if not isinstance(value, dict):
                 raise SourceError(f'Expected an object at line {index + 1}')
             records.append((index, value))
+            if line.endswith(b'\n'):
+                records.safe_offset = records.byte_count
+                records.safe_next_line = index + 1
+                records.safe_digest = records.hasher.digest()
+            else:
+                records.has_unterminated_value = True
     records.modified_ns = path.stat().st_mtime_ns
     return records, warnings
 
@@ -162,7 +188,7 @@ class SourceAdapter:
                         yield resolved
 
     def discover(self):
-        return [SourceFile(path) for path in self.files(['**/*.jsonl'])]
+        return (SourceFile(path) for path in self.files(['**/*.jsonl']))
 
     def info(self):
         return {'id': self.source, 'label': self.label,

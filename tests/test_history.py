@@ -49,7 +49,7 @@ class FixtureCase(unittest.TestCase):
         self.root = Path(self.temp.name)
 
     def service(self, adapters):
-        service = ClaudeViewerService(self.root / 'viewer.db', adapters)
+        service = ClaudeViewerService(self.root / 'viewer.db', adapters, skip_recent_seconds=0)
         service.initialize()
         return service
 
@@ -469,7 +469,7 @@ class ArchiveTests(FixtureCase):
             try:
                 self.assertTrue(service.sync_status()['running'])
                 progress = service.sync_status()['progress']
-                self.assertEqual(progress['phase'], 'scanning')
+                self.assertEqual(progress['phase'], 'syncing')
                 self.assertEqual(progress['filesTotal'], 1)
                 self.assertEqual(progress['currentFile'], path.name)
                 second = service.start_sync()
@@ -553,6 +553,29 @@ class APITests(FixtureCase):
         self.assertEqual(self.client.get('/api/sessions/absent/messages').status_code, 404)
         self.assertEqual(self.client.get('/missing-route').status_code, 404)
 
+    def test_message_pages_use_2000_without_expanding_other_endpoints(self):
+        with (self.root / 'session.jsonl').open('a', encoding='utf-8') as stream:
+            for i in range(1999):
+                stream.write(json.dumps({'type': 'message', 'id': f'more-{i}', 'parentId': 'a',
+                    'message': {'role': 'assistant', 'content': f'answer {i}'}}) + '\n')
+        self.assertEqual(self.viewer.sync_sessions()['failed'], 0)
+        response = self.client.get('/api/sessions/pi:shared/messages')
+        self.assertEqual(response.status_code, 200)
+        page = response.json
+        self.assertEqual(page['total'], 2001)
+        self.assertEqual(len(page['items']), 2000)
+        self.assertEqual(page['nextCursor'], 2000)
+        self.assertEqual(page['items'][-1]['orderId'], 1999)
+        self.assertEqual(len(self.viewer.get_messages('pi:shared')['items']), 2000)
+        second = self.client.get('/api/sessions/pi:shared/messages?limit=2000&cursor=2000')
+        self.assertEqual(second.status_code, 200)
+        self.assertEqual(len(second.json['items']), 1)
+        self.assertEqual(second.json['items'][0]['orderId'], 2000)
+        self.assertIsNone(second.json['nextCursor'])
+        for url in ['/api/sessions/pi:shared/messages?limit=2001', '/api/sessions?limit=501',
+                    '/api/sessions/pi:shared/records?limit=501']:
+            self.assertEqual(self.client.get(url).status_code, 400, url)
+
     def test_sources_filter_search_and_raw(self):
         sources = self.client.get('/api/sources').json
         self.assertEqual(sources[0]['id'], 'pi')
@@ -573,7 +596,7 @@ class APITests(FixtureCase):
         env['VIEWER_DB'] = str(self.root / 'cli.db')
         env['VIEWER_SOURCE_ROOTS'] = json.dumps({
             'claude': [], 'codex': [], 'copilot_cli': [], 'vscode_chat': [], 'pi': [str(self.root)]})
-        process = subprocess.Popen([sys.executable, '-u', 'server.py', '--port', str(port)],
+        process = subprocess.Popen([sys.executable, '-u', 'server.py', '--port', str(port), '--include-recent'],
                                    cwd=Path(__file__).resolve().parents[1], env=env,
                                    stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
         try:

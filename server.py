@@ -54,11 +54,11 @@ def create_app(viewer_service=None):
         app.logger.exception('Viewer request failed')
         return jsonify(error='Archive operation failed; see server log'), 500
 
-    def page(default=200):
+    def page(default=200, maximum=500):
         offset = int(request.args.get('cursor', '0'))
         limit = int(request.args.get('limit', str(default)))
-        if offset < 0 or not 1 <= limit <= 500:
-            raise ValueError('cursor must be nonnegative and limit must be between 1 and 500')
+        if offset < 0 or not 1 <= limit <= maximum:
+            raise ValueError(f'cursor must be nonnegative and limit must be between 1 and {maximum}')
         return offset, limit
 
     def found(result):
@@ -106,7 +106,7 @@ def create_app(viewer_service=None):
 
     @app.get('/api/sessions/<path:session_id>/messages')
     def messages_page(session_id):
-        offset, limit = page()
+        offset, limit = page(2000, maximum=2000)
         return found(service.get_messages(session_id, offset=offset, limit=limit, branch=request.args.get('branch')))
 
     @app.get('/session/<path:session_id>')
@@ -136,13 +136,14 @@ def create_app(viewer_service=None):
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='Local read-only agent history viewer')
     parser.add_argument('--port', type=int, default=8000)
+    parser.add_argument('--include-recent', action='store_true', help='Explicitly include files modified within the last hour')
     parser.add_argument('--debug', action='store_true')
     parser.add_argument('--no-sync', action='store_true', help='Skip the default startup sync')
     parser.add_argument('--sync', action='store_true', help=argparse.SUPPRESS)  # Old explicit flag remains valid.
     args = parser.parse_args()
     if not 1 <= args.port <= 65535:
         parser.error('--port must be between 1 and 65535')
-    app = create_app()
+    app = create_app(ClaudeViewerService(skip_recent_seconds=0 if args.include_recent else 3600))
     service = app.config['VIEWER_SERVICE']
     if not args.no_sync:
         print('Syncing configured history sources before startup (read-only)...', flush=True)

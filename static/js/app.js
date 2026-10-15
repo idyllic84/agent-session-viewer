@@ -17,6 +17,9 @@ class App {
         this.messageGeneration = 0;
         this.nextCursor = null;
         this.loadingMore = false;
+        this.searchTimer = null;
+        this.sessionSearchController = null;
+        this.lastSearchQuery = '';
         this.sessionListView.onSessionSelect = id => this.loadSession(id);
         this.conversationView.onMessageSelect = message => this.messageDetailsView.render(message);
         document.getElementById('reloadBtn').addEventListener('click', () => this.reloadSessions());
@@ -25,11 +28,27 @@ class App {
             this.loadSessions();
         });
         document.getElementById('projectSelect').addEventListener('change', () => this.renderSessions());
-        document.getElementById('sessionSearch').addEventListener('keydown', e => {
-            if (e.key === 'Enter') this.loadSessions();
+        const searchInput = document.getElementById('sessionSearch');
+        const scheduleSearch = () => {
+            clearTimeout(this.searchTimer);
+            this.searchTimer = setTimeout(() => this.loadSessions(), 350);
+        };
+        searchInput.addEventListener('input', e => { if (!e.isComposing) scheduleSearch(); });
+        searchInput.addEventListener('compositionend', scheduleSearch);
+        searchInput.addEventListener('keydown', e => {
+            if (e.key === 'Enter' && !e.isComposing) { clearTimeout(this.searchTimer); this.loadSessions(); }
+        });
+        document.getElementById('sessionSearchBtn').addEventListener('click', () => {
+            clearTimeout(this.searchTimer); this.loadSessions();
+        });
+        document.getElementById('resetSearchScopeBtn').addEventListener('click', () => {
+            document.getElementById('sourceSelect').value = '';
+            document.getElementById('projectSelect').value = '';
+            this.loadSessions();
         });
         document.getElementById('clearSessionSearchBtn').addEventListener('click', () => {
             document.getElementById('sessionSearch').value = '';
+            clearTimeout(this.searchTimer);
             this.loadSessions();
         });
         document.getElementById('uuidSearch').addEventListener('keydown', e => {
@@ -82,30 +101,43 @@ class App {
 
     async loadSessions() {
         const generation = ++this.listGeneration;
+        this.sessionSearchController?.abort();
+        this.sessionSearchController = new AbortController();
+        const query = document.getElementById('sessionSearch').value.trim();
+        if (query !== this.lastSearchQuery) document.getElementById('projectSelect').value = '';
+        this.lastSearchQuery = query;
+        document.getElementById('sessionSearchStatus').textContent = query ? 'Searching user/assistant content…' : 'Loading sessions…';
         const container = document.getElementById('sessionList');
         container.innerHTML = '<div class="loading">Loading sessions</div>';
         try {
             const sessions = await fetchSessions(document.getElementById('sourceSelect').value,
-                document.getElementById('sessionSearch').value.trim());
+                query, this.sessionSearchController.signal);
             if (generation !== this.listGeneration) return;
-            this.sessions = sessions;
+            this.sessions = sessions.filter(session => (session.userMessageCount ?? session.metadata?.userMessageCount ?? 0) > 0 && session.metadata?.relationship !== 'subagent');
             const projects = document.getElementById('projectSelect');
             const selected = projects.value;
             projects.replaceChildren(new Option('All projects', ''));
-            const paths = new Set(sessions.map(session => session.project).filter(Boolean));
+            const paths = new Set(this.sessions.map(session => session.project).filter(Boolean));
             if (selected) paths.add(selected);
             for (const path of [...paths].sort()) projects.append(new Option(path, path));
             projects.value = selected;
             this.renderSessions();
         } catch (error) {
             if (generation !== this.listGeneration) return;
+            if (error.name === 'AbortError') return;
+            document.getElementById('sessionSearchStatus').textContent = `Search failed: ${error.message}`;
             container.innerHTML = `<div class="empty-state"><p>${escapeHtml(error.message)}</p></div>`;
         }
     }
 
     renderSessions() {
         const project = document.getElementById('projectSelect').value;
-        this.sessionListView.render((this.sessions || []).filter(session => !project || session.project === project));
+        const visible = (this.sessions || []).filter(session => !project || session.project === project);
+        this.sessionListView.render(visible);
+        const source = document.getElementById('sourceSelect');
+        const scope = source.value ? source.options[source.selectedIndex].textContent : 'all sources';
+        document.getElementById('sessionSearchStatus').textContent = `${visible.length} sessions · ${scope}${project ? ' · project filter active' : ''}${this.lastSearchQuery ? ' · user/assistant content' : ''}`;
+        document.getElementById('resetSearchScopeBtn').hidden = !source.value && !project;
     }
 
     async restoreSyncStatus() {
@@ -119,7 +151,10 @@ class App {
     }
 
     showSyncResult(result) {
-        this.status(`${result.added} added · ${result.updated} updated · ${result.unchanged} unchanged · ${result.failed} failed`,
+        const append = result.incrementalSessions
+            ? ` · ${result.incrementalSessions} incremental sessions · ${result.reprojectedScopes || 0} changed turns/requests`
+            : result.appendedSessions ? ` · ${result.appendedMessages} messages appended` : '';
+        this.status(`${result.added} added · ${result.updated} updated · ${result.unchanged} unchanged · ${result.skippedRecent || 0} recent files skipped · ${result.failed} failed${append}`,
             [...(result.errors || []), ...(result.warnings || [])]);
     }
 
@@ -129,14 +164,14 @@ class App {
             this.status(`Sync running · ${state.indexedSessions ?? '?'} sessions already indexed. You can browse committed history.`);
             return;
         }
-        const stage = progress.phase === 'scanning'
-            ? `Scanning ${progress.filesDone}/${progress.filesTotal} files`
-            : progress.phase === 'importing'
-                ? `Importing ${progress.sessionsDone}/${progress.sessionsTotal} sessions`
-                : progress.phase;
+        const stage = progress.phase === 'syncing'
+            ? `${progress.filesDone} files processed · ${progress.sessionsDone} sessions synced · ${progress.skippedRecent || 0} recent files skipped`
+            : progress.phase === 'scanning' ? `Scanning ${progress.filesDone}/${progress.filesTotal} files`
+                : progress.phase === 'importing' ? `Importing ${progress.sessionsDone}/${progress.sessionsTotal} sessions` : progress.phase;
         const elapsed = state.elapsedSeconds ?? 0;
         const time = `${Math.floor(elapsed / 60)}m ${Math.floor(elapsed % 60)}s`;
-        this.status(`${stage} · ${progress.source || ''} · ${progress.currentFile || ''} · ${time}`);
+        const step = progress.step ? ` · ${progress.step}` : '';
+        this.status(`${stage} · ${progress.source || ''} · ${progress.currentFile || ''}${step} · ${time}`);
     }
 
     monitorSync() {

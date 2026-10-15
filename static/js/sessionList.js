@@ -17,8 +17,8 @@ export class SessionListView {
     }
 
     render(sessions) {
-        this.sessions = sessions;
-        this.container.innerHTML = sessions.length ? sessions.map(session => this.renderSessionItem(session)).join('')
+        this.sessions = sessions.filter(session => (session.userMessageCount ?? session.metadata?.userMessageCount ?? 0) > 0 && session.metadata?.relationship !== 'subagent');
+        this.container.innerHTML = this.sessions.length ? this.sessions.map(session => this.renderSessionItem(session)).join('')
             : '<div class="empty-state"><p>No sessions found. Click Reload to import local history.</p></div>';
         this.selectSessionUI(this.selectedId);
     }
@@ -27,7 +27,7 @@ export class SessionListView {
         return `<div class="session-item" data-session-id="${escapeHtml(session.id)}">
             <div class="session-header">
                 <span class="source-badge">${escapeHtml(LABELS[session.source] || session.source)}${session.metadata?.relationship ? ` · ${escapeHtml(session.metadata.relationship)}` : ''}</span>
-                <span class="message-count">${session.messageCount} records</span>
+                <span class="message-count" title="User messages / total messages (including assistant, tool and system records)">${session.userMessageCount ?? session.metadata?.userMessageCount ?? 0} / ${session.messageCount}</span>
             </div>
             <div class="session-name" title="${escapeHtml(session.name)}">${escapeHtml(session.name)}</div>
             <div class="session-project" title="${escapeHtml(session.project)}">${escapeHtml(session.project || '(no workspace)')}</div>

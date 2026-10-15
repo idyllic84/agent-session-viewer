@@ -8,6 +8,7 @@ import sqlite3
 import time
 from db import Database, ARCHIVE_APPLICATION_ID
 from service import ClaudeViewerService
+from session_policy import is_subagent
 
 
 def archive_ids(path):
@@ -17,7 +18,8 @@ def archive_ids(path):
     try:
         if conn.execute('PRAGMA application_id').fetchone()[0] != ARCHIVE_APPLICATION_ID:
             raise ValueError('Refusing to replace a database not owned by this viewer')
-        return {row[0] for row in conn.execute('SELECT id FROM sessions')}
+        return {row[0] for row in conn.execute('SELECT id,source,path,metadata FROM sessions WHERE message_count>0')
+                if not is_subagent(row[1], row[2], json.loads(row[3]))}
     finally:
         conn.close()
 
@@ -44,7 +46,7 @@ def validate(database):
         return conn.execute('SELECT COUNT(*) FROM sessions').fetchone()[0]
 
 
-def rebuild(target, *, adapters=None, discard_backup=False, allow_missing=False):
+def rebuild(target, *, adapters=None, discard_backup=False, allow_missing=False, skip_recent_seconds=3600):
     target = Database(target).db_path.resolve()  # Includes the legacy claude.db safeguard.
     before_ids = archive_ids(target)
     stamp = datetime.now().strftime('%Y%m%d-%H%M%S-%f')
@@ -52,7 +54,7 @@ def rebuild(target, *, adapters=None, discard_backup=False, allow_missing=False)
     backup = target.with_name(f'{target.stem}.backup-{stamp}.db')
     started = time.perf_counter()
     print(f'Building {candidate.name}; current archive remains untouched', flush=True)
-    service = ClaudeViewerService(candidate, adapters)
+    service = ClaudeViewerService(candidate, adapters, skip_recent_seconds=skip_recent_seconds)
     service.initialize()
     result = service.sync_sessions()
     if result['failed']:
@@ -61,7 +63,8 @@ def rebuild(target, *, adapters=None, discard_backup=False, allow_missing=False)
     print('Validating SQLite, foreign keys and the search index...', flush=True)
     session_count = validate(service._db)
     print('Checking archived session coverage and switching databases...', flush=True)
-    after_ids = {session['id'] for session in service.get_all_sessions()}
+    with service._db.get_connection() as conn:
+        after_ids = {row[0] for row in conn.execute('SELECT id FROM sessions')}
     missing = before_ids - after_ids
     if missing and not allow_missing:
         raise RuntimeError(f'{len(missing)} previously archived sessions are absent. Original archive unchanged; '
@@ -92,5 +95,7 @@ if __name__ == '__main__':
     parser.add_argument('--database', default=os.environ.get('VIEWER_DB') or str(Path(__file__).parent / 'viewer.db'))
     parser.add_argument('--discard-backup', action='store_true', help='Remove the old viewer index only after validation/switch')
     parser.add_argument('--allow-missing', action='store_true', help='Allow sessions absent from current source files')
+    parser.add_argument('--include-recent', action='store_true', help='Explicitly include files modified within the last hour')
     args = parser.parse_args()
-    rebuild(Path(args.database), discard_backup=args.discard_backup, allow_missing=args.allow_missing)
+    rebuild(Path(args.database), discard_backup=args.discard_backup, allow_missing=args.allow_missing,
+            skip_recent_seconds=0 if args.include_recent else 3600)

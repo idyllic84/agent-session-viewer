@@ -30,4 +30,8 @@ assert.ok(!extractFullMessageText({ message: { content: [
     { type: 'image', data: 'secret-image-data' },
 ] } }).includes('secret-image-data'));
 assert.equal(getMessageTypeClass({ type: '\" onmouseover=bad' }), '--onmouseover-bad');
+const referenceSentence = '用 event.item.model_dump() 转发上游 conversation.item.added';
+const referenced = { type: 'assistant', message: { content: [{ type: 'text', text: referenceSentence }] } };
+assert.equal(extractMessagePreview(referenced.message), referenceSentence);
+assert.equal(extractFullMessageText(referenced), referenceSentence);
 console.log('Frontend utility assertions passed');

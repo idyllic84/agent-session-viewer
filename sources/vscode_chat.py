@@ -5,7 +5,7 @@ len(v) elements. The raw operation log is never mutated during reconstruction.
 """
 from copy import deepcopy
 from urllib.parse import unquote, urlparse
-from models import SessionDocument, blocks, text
+from models import SessionDocument, blocks, compact_value, text
 from .base import SourceAdapter, SourceFile, SourceError, SnapshotRecords, read_records, read_json
 
 
@@ -23,8 +23,8 @@ def folder_path(uri):
     return path
 
 
-def replay_operations(records):
-    state = None
+def replay_operations(records, initial_state=None):
+    state = initial_state
     for index, operation in records:
         kind = operation.get('kind')
         if kind == 0:
@@ -74,6 +74,48 @@ def replay_operations(records):
     if state is None:
         raise SourceError('No complete snapshot yet')
     return state
+
+
+def _markdown_text(chunk):
+    value = chunk.get('value', chunk.get('content', ''))
+    if value is None:
+        return ''
+    if isinstance(value, str):
+        return value
+    if isinstance(value, dict) and isinstance(value.get('value'), str):
+        return value['value']  # Serialized MarkdownString, not its JSON representation.
+    return None
+
+
+def _reference_label(chunk):
+    """The visible chip label belongs in assistant prose, not a system event."""
+    reference = chunk.get('inlineReference')
+    for owner in (chunk, reference if isinstance(reference, dict) else {}):
+        for key in ('name', 'label', 'title'):
+            value = owner.get(key)
+            if isinstance(value, str) and value.strip():
+                return value
+    if isinstance(reference, str) and reference.strip():
+        return reference
+    if isinstance(reference, dict):
+        location = reference.get('location')
+        uri = reference.get('uri')
+        if uri is None and isinstance(location, dict):
+            uri = location.get('uri')
+        uri = uri if uri is not None else reference
+        if isinstance(uri, dict):
+            path = uri.get('fsPath') or uri.get('path')
+            if isinstance(path, str) and path:
+                return unquote(path).replace('\\', '/').rstrip('/').rsplit('/', 1)[-1] or path
+            external = uri.get('external')
+            if isinstance(external, str) and external:
+                return external
+        elif isinstance(uri, str) and uri:
+            parsed = urlparse(uri)
+            if parsed.scheme in ('', 'file'):
+                return unquote(parsed.path).replace('\\', '/').rstrip('/').rsplit('/', 1)[-1] or uri
+            return uri
+    return None
 
 
 def _native_call_id(key):
@@ -150,10 +192,9 @@ def _result_summary(result):
 class VSCodeChatAdapter(SourceAdapter):
     source = 'vscode_chat'
     label = 'VS Code Chat'
-    parser_version = 2
+    parser_version = 3
 
     def discover(self):
-        entries = []
         patterns = ['workspaceStorage/*/chatSessions/*.json', 'workspaceStorage/*/chatSessions/*.jsonl',
                     'globalStorage/emptyWindowChatSessions/*.json', 'globalStorage/emptyWindowChatSessions/*.jsonl',
                     'profiles/*/globalStorage/emptyWindowChatSessions/*.json',
@@ -165,8 +206,7 @@ class VSCodeChatAdapter(SourceAdapter):
                 # workspace.json is a sidecar inside the same authorized root.
                 if workspace.exists() and any(workspace.resolve().is_relative_to(r) for r in self.roots if r.is_dir()):
                     dependencies = (workspace.resolve(),)
-            entries.append(SourceFile(path, dependencies=dependencies))
-        return entries
+            yield SourceFile(path, dependencies=dependencies)
 
     def parse(self, entry):
         if entry.path.suffix == '.jsonl':
@@ -175,13 +215,16 @@ class VSCodeChatAdapter(SourceAdapter):
         else:
             state = read_json(entry.path)
             records, warnings = SnapshotRecords.from_json(entry.path, state), []
+        return self.project_state(entry, records, state, warnings)
+
+    def project_state(self, entry, records, state, warnings=(), request_items=None, raw_overrides=None):
         project = ''
         if entry.dependencies:
             workspace = read_json(entry.dependencies[0], keep_bytes=True)
             records.dependencies[str(entry.dependencies[0])] = workspace.snapshot_bytes
             project = folder_path(workspace.get('folder') or workspace.get('workspace'))
         doc = SessionDocument(self.source, str(state.get('sessionId') or entry.path.stem), project,
-                              records, name=str(state.get('customTitle') or ''), warnings=warnings)
+                              records, name=str(state.get('customTitle') or ''), warnings=list(warnings))
         doc.metadata['formatVersion'] = state.get('version')
         requests = state.get('requests') or []
         if not isinstance(requests, list):
@@ -192,10 +235,13 @@ class VSCodeChatAdapter(SourceAdapter):
             keys = row.get('k', [])
             if len(keys) >= 2 and keys[0] == 'requests' and isinstance(keys[1], int):
                 last_operation[keys[1]] = index
-        for request_index, request in enumerate(requests):
+        doc.sync_state = {'kind': 'vscode_chat', 'header': {k: v for k, v in state.items() if k != 'requests'},
+                          'requestCount': len(requests)}
+        for request_index, request in (request_items if request_items is not None else enumerate(requests)):
             if not isinstance(request, dict):
                 raise SourceError('Invalid request')
-            raw = last_operation.get(request_index, records[0][0])
+            raw = last_operation.get(request_index, (raw_overrides or {}).get(request_index, records[0][0] if records else 0))
+            doc.scope_states[f'request:{request_index}'] = {'request': request, 'raw': raw}
             rid = str(request.get('requestId') or f'request-{request_index}')
             timestamp = request.get('timestamp', state.get('creationDate'))
             common = dict(timestamp=timestamp, timestamp_unit='ms', model=request.get('modelId'),
@@ -219,6 +265,28 @@ class VSCodeChatAdapter(SourceAdapter):
                 response = [{'value': response}]
             if not isinstance(response, list):
                 raise SourceError('Invalid response chunks')
+            pending_text = []
+            pending_indices = []
+            pending_references = []
+            unresolved_references = 0
+
+            def flush_text():
+                if not pending_indices:
+                    return
+                # No strip/join separator: these are fragments of one rendered
+                # response, so original spaces/newlines are semantically significant.
+                prose = ''.join(pending_text)
+                if prose:
+                    doc.add(raw, 'assistant', prose,
+                            native_id=f'{rid}:response-{pending_indices[0]}',
+                            sourceLocator={'requestIndex': request_index, 'chunkIndex': pending_indices[0],
+                                           'chunkIndices': list(pending_indices)},
+                            inlineReferences=list(pending_references), timestamp=timestamp,
+                            timestamp_unit='ms', model=request.get('modelId'), nativeType='response_text')
+                pending_text.clear()
+                pending_indices.clear()
+                pending_references.clear()
+
             for chunk_index, chunk in enumerate(response):
                 if not isinstance(chunk, dict):
                     chunk = {'value': chunk}
@@ -226,9 +294,26 @@ class VSCodeChatAdapter(SourceAdapter):
                 args = {**common, 'native_id': f'{rid}:response-{chunk_index}', 'nativeType': kind,
                         'sourceLocator': {'requestIndex': request_index, 'chunkIndex': chunk_index}}
                 if kind in ('markdown', 'markdownContent') or 'kind' not in chunk:
-                    if chunk.get('value'):
-                        doc.add(raw, 'assistant', text(chunk['value']), **args)
-                elif kind == 'thinking':
+                    fragment = _markdown_text(chunk)
+                    if fragment is None:
+                        fragment = '[unresolved markdown content]'
+                        doc.warnings.append(f'Unsupported markdown content in request {request_index}, chunk {chunk_index}; retained in raw records')
+                    pending_text.append(fragment)
+                    pending_indices.append(chunk_index)
+                    continue
+                if kind == 'inlineReference':
+                    label = _reference_label(chunk)
+                    if label is None:
+                        label = '[unresolved inline reference]'
+                        unresolved_references += 1
+                    pending_text.append(label)
+                    pending_indices.append(chunk_index)
+                    pending_references.append(compact_value({'chunkIndex': chunk_index, 'label': label,
+                                               'reference': chunk.get('inlineReference'),
+                                               'resolveId': chunk.get('resolveId')}))
+                    continue
+                flush_text()
+                if kind == 'thinking':
                     doc.add(raw, 'assistant', [{'type': 'thinking', 'thinking': text(
                         chunk.get('value', chunk.get('text', chunk.get('thinking', ''))))}], kind='thinking', **args)
                 elif kind == 'toolInvocationSerialized':
@@ -263,6 +348,9 @@ class VSCodeChatAdapter(SourceAdapter):
                 else:
                     # Keep references, edits, questions and future chunk kinds as structured blocks.
                     doc.add(raw, 'system', [{'type': kind, 'value': chunk}], **args)
+            flush_text()
+            if unresolved_references:
+                doc.warnings.append(f'{unresolved_references} inline references in request {request_index} have no readable label; placeholders and raw provenance retained')
             # Some UI calls use different IDs than the model. Preserve unpaired
             # outputs as separate, explicitly unpaired records instead of guessing.
             for key, value in mapped_results.items():
@@ -278,4 +366,15 @@ class VSCodeChatAdapter(SourceAdapter):
             if result:
                 doc.add(raw, 'system', [{'type': 'request_result', 'value': _result_summary(result)}],
                         native_id=f'{rid}:result', **common)
+        positions = {}
+        for message in doc.messages:
+            index = message['sourceLocator']['requestIndex']
+            scope = f'request:{index}'
+            position = positions.get(scope, 0)
+            # Request-scoped identity stays collision-free when only one request
+            # of a single-record JSON snapshot is regenerated.
+            message['id'] = f'{doc.id}:request:{index}:{position}'
+            doc.message_scopes[message['id']] = scope
+            doc.message_order[message['id']] = (index, position)
+            positions[scope] = position + 1
         return doc.finish()

@@ -15,6 +15,9 @@ class CodexAdapter(SourceAdapter):
 
     def parse(self, entry):
         records, warnings = read_records(entry.path)
+        return self.project_records(entry, records, warnings)
+
+    def project_records(self, entry, records, warnings=(), policy=None):
         header = next((r.get('payload') for _, r in records if r.get('type') == 'session_meta'), None)
         if not isinstance(header, dict) or not header.get('id'):
             raise SourceError('Missing Codex thread metadata')
@@ -86,6 +89,12 @@ class CodexAdapter(SourceAdapter):
             item.get('type') in ('UserMessage', 'AgentMessage') for _, _, item in completed)
         canonical_reasoning = mode == 'paginated' and any(item.get('type') == 'Reasoning' for _, _, item in completed)
         has_compactions = any(r.get('type') == 'compacted' for _, r in local)
+        if policy is not None:
+            canonical_messages = policy.get('messages', canonical_messages)
+            canonical_reasoning = policy.get('reasoning', canonical_reasoning)
+            has_compactions = policy.get('compactions', has_compactions)
+        doc.sync_state['policy'] = {'messages': canonical_messages, 'reasoning': canonical_reasoning,
+                                    'compactions': has_compactions}
         raw_messages = any(r.get('type') == 'response_item' and
                            (r.get('payload') or {}).get('type') == 'message' for _, r in local)
         model = None

@@ -7,10 +7,13 @@ class CopilotCLIAdapter(SourceAdapter):
     label = 'Copilot CLI'
 
     def discover(self):
-        return [SourceFile(path) for path in self.files(['**/events.jsonl', '*.jsonl'])]
+        return (SourceFile(path) for path in self.files(['**/events.jsonl', '*.jsonl']))
 
     def parse(self, entry):
         records, warnings = read_records(entry.path)
+        return self.project_records(entry, records, warnings)
+
+    def project_records(self, entry, records, warnings=()):
         header = next((r.get('data') for _, r in records if r.get('type') == 'session.start'), None)
         if not isinstance(header, dict) or not header.get('sessionId'):
             raise SourceError('Missing Copilot session.start')

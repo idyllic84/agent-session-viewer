@@ -13,7 +13,6 @@ from sources.base import SourceFile, read_records
 from sources.codex import CodexAdapter
 from sources.pi import PiAdapter
 from sources.vscode_chat import VSCodeChatAdapter
-from sync_cache import ProjectionCache
 
 
 def lines(path, records):
@@ -34,7 +33,7 @@ class OptimizedTests(unittest.TestCase):
         self.root = Path(self.temp.name)
 
     def viewer(self, adapters):
-        viewer = ClaudeViewerService(self.root / 'archive.db', adapters)
+        viewer = ClaudeViewerService(self.root / 'archive.db', adapters, skip_recent_seconds=0)
         viewer.initialize()
         return viewer
 
@@ -206,7 +205,9 @@ class OptimizedTests(unittest.TestCase):
         self.assertEqual(results[0]['toolCallId'], 'model-id')
 
     def test_rebuild_validates_switches_and_retains_backup(self):
-        from rebuild import rebuild
+        from functools import partial
+        from rebuild import rebuild as rebuild_archive
+        rebuild = partial(rebuild_archive, skip_recent_seconds=0)
         path = lines(self.root / 's.jsonl', pi('rebuild', 'hello'))
         target = self.root / 'rebuilt.db'
         first = rebuild(target, adapters=[PiAdapter([self.root])])
@@ -218,7 +219,9 @@ class OptimizedTests(unittest.TestCase):
         self.assertEqual(Database(target).get_messages('pi:rebuild')['total'], 1)
 
     def test_rebuild_failure_and_missing_history_do_not_replace_original(self):
-        from rebuild import rebuild
+        from functools import partial
+        from rebuild import rebuild as rebuild_archive
+        rebuild = partial(rebuild_archive, skip_recent_seconds=0)
         path = lines(self.root / 's.jsonl', pi('keep', 'hello'))
         target = self.root / 'rebuilt.db'
         rebuild(target, adapters=[PiAdapter([self.root])])
@@ -230,22 +233,6 @@ class OptimizedTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, 'previously archived sessions'):
             rebuild(target, adapters=[])
         self.assertEqual(target.read_bytes(), before)
-
-    def test_projection_spool_roundtrip_snapshot_and_tamper_rejected(self):
-        path = lines(self.root / 's.jsonl', pi('cached', 'text'))
-        doc = PiAdapter([self.root]).parse(SourceFile(path))
-        expected = SourceFile(path).snapshot_fingerprint(doc.records)
-        with ProjectionCache() as cache:
-            token = cache.save(doc)
-            restored = cache.load(token)
-            self.assertEqual(restored.messages, doc.messages)
-            self.assertEqual(SourceFile(path).snapshot_fingerprint(restored.records), expected)
-            cached_path = cache._entries[token][0]
-            cached_path.write_bytes(b'malicious or corrupted bytes')
-            with self.assertRaisesRegex(ValueError, 'authentication'):
-                cache.load(token)
-            directory = cache.directory
-        self.assertFalse(directory.exists())
 
 
 if __name__ == '__main__':

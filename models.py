@@ -139,6 +139,17 @@ def searchable_text(content):
     return '\n'.join(p for p in parts if p)
 
 
+def indexed_message_text(message):
+    """Session search indexes conversation prose only, not events/tool payloads."""
+    if message.get('role') not in ('user', 'assistant'):
+        return ''
+    content = message.get('message', {}).get('content') or []
+    if isinstance(content, str):
+        content = blocks(content)
+    readable = [block for block in content if isinstance(block, dict) and block.get('type') in ('text', 'thinking')]
+    return searchable_text(readable)
+
+
 @dataclass
 class SessionDocument:
     source: str
@@ -149,6 +160,14 @@ class SessionDocument:
     messages: list = field(default_factory=list)
     metadata: dict = field(default_factory=dict)
     warnings: list = field(default_factory=list)
+    append_base: dict = field(default_factory=dict)
+    sync_state: dict = field(default_factory=dict)
+    scope_states: dict = field(default_factory=dict)
+    raw_scopes: dict = field(default_factory=dict)
+    message_scopes: dict = field(default_factory=dict)
+    message_order: dict = field(default_factory=dict)
+    changed_scopes: set = field(default_factory=set)
+    raw_snapshot_replace: bool = False
     _subindices: dict = field(default_factory=dict, init=False, repr=False)
 
     @property
