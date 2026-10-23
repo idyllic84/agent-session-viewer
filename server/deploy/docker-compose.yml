@@ -1,0 +1,63 @@
+# VM: HTTPS terminates at Cloudflare; NO host ports are published.
+# From repo root:
+# docker compose --env-file server/deploy/.env -f server/deploy/docker-compose.yml up -d --build
+name: claudeviewer-cloud
+services:
+  viewer:
+    build:
+      context: ../..
+      dockerfile: server/deploy/Dockerfile
+      args:
+        VCS_REF: ${VCS_REF:-unknown}
+    image: ${VIEWER_IMAGE:-agent-session-viewer:latest}
+    restart: unless-stopped
+    init: true
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    environment:
+      VIEWER_PUBLIC_ORIGIN: ${VIEWER_PUBLIC_ORIGIN:?Set the public HTTPS origin in server/deploy/.env}
+      VIEWER_LOCAL_HTTP: "0"
+      VIEWER_DATA_DIR: /data
+      VIEWER_MAX_REQUEST_MIB: ${VIEWER_MAX_REQUEST_MIB:-32}
+    volumes:
+      - viewer-cloud-data:/data
+    networks: [backend]
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=64m,mode=1777
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "10"
+    stop_grace_period: 30s
+
+  cloudflared:
+    image: ${CLOUDFLARED_IMAGE:-cloudflare/cloudflared:latest}
+    restart: unless-stopped
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    command: tunnel --no-autoupdate run
+    environment:
+      # Not a command-line argument; never commit .env or publish expanded compose config.
+      TUNNEL_TOKEN: ${CLOUDFLARE_TUNNEL_TOKEN:?Set the Cloudflare tunnel token in server/deploy/.env}
+    depends_on:
+      viewer:
+        condition: service_healthy
+    networks: [backend,egress]
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
+
+networks:
+  backend:
+    driver: bridge
+    internal: true
+  egress:
+    driver: bridge
+
+volumes:
+  viewer-cloud-data:

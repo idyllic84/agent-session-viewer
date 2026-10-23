@@ -1,0 +1,9 @@
+body { display: flex; flex-direction: column; }
+body > .container { flex: 1; min-height: 0; height: auto; }
+body > details { flex: none; max-height: 42vh; overflow: auto; padding: 6px 12px; }
+#cloudDevices > div { margin: 8px 0; padding: 8px; border-bottom: 1px solid var(--border-color); }
+#cloudDevices button { margin: 4px; }
+#cloudDevices pre { max-height: 150px; overflow: auto; white-space: pre-wrap; }
+/* Analysis-only cloud data has neither original-event replay nor saved branches. */
+#branchSelect, button[data-action="raw"] { display: none !important; }
+#newDeviceToken { white-space: pre-wrap; overflow-wrap: anywhere; user-select: all; }

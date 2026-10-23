@@ -1,0 +1,93 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Agent History Viewer</title>
+    <link rel="stylesheet" href="static/css/style.css">
+</head>
+<body>
+    <div class="container">
+        <!-- Left Panel: Session List -->
+        <div class="panel left-panel">
+            <div class="panel-header">
+                <h2>Agent History · Read-only</h2>
+                <button id="reloadBtn">Reload</button>
+            </div>
+            <div class="filter-bar" id="sessionFilterBar">
+                <label class="filter-label" for="sourceSelect">Source:</label>
+                <select id="sourceSelect"><option value="">All sources</option></select>
+                <label class="filter-label" for="projectSelect">Project:</label>
+                <select id="projectSelect"><option value="">All projects</option></select>
+                <div class="filter-label">Search:</div>
+                <div class="uuid-search">
+                    <input type="search" id="sessionSearch" placeholder="Search user/assistant content…" aria-label="Search sessions by user and assistant prose" />
+                    <button id="sessionSearchBtn" title="Search sessions">Search</button>
+                    <button id="clearSessionSearchBtn" class="clear-btn" title="Clear search">×</button>
+                </div>
+            </div>
+            <div class="sync-status" id="sessionSearchStatus" role="status" aria-live="polite"></div>
+            <button id="resetSearchScopeBtn" class="scope-reset" hidden>Search all sources/projects</button>
+            <div class="sync-status" id="syncStatus" role="status">Local history only. Click Reload to import.</div>
+            <details id="syncIssues" class="sync-status" hidden><summary>Sync issues</summary><pre id="syncIssueText"></pre></details>
+            <div class="panel-content">
+                <div id="sessionList" class="session-list">
+                    <div class="loading">Loading sessions...</div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Resizer between left and middle -->
+        <div class="resizer" data-direction="left"></div>
+
+        <!-- Middle Panel: Conversation History -->
+        <div class="panel middle-panel">
+            <div class="panel-header">
+                <h2 id="conversationTitle">Conversation</h2>
+                <span id="loadedCount" class="message-count"></span>
+            </div>
+            <div id="sessionWarnings" class="sync-status" role="status"></div>
+            <div class="filter-bar" id="filterBar">
+                <select id="branchSelect" disabled aria-label="Conversation branch">
+                    <option value="">All records</option><option value="active">Current saved branch</option>
+                </select>
+                <div class="filter-label">Filter:</div>
+                <div class="filter-tags" id="filterTags">
+                    <!-- Filter tags will be dynamically added here -->
+                </div>
+                <div class="uuid-search">
+                    <input type="text" id="uuidSearch" placeholder="Find in this session’s loaded messages…" title="This searches only loaded messages. Use the left search box to find sessions globally." />
+                    <button id="clearUuidBtn" class="clear-btn" title="Clear search">×</button>
+                </div>
+            </div>
+            <div class="panel-content">
+                <div id="conversationHistory" class="conversation-history">
+                    <div class="empty-state">
+                        <p>Select a session from the left to view conversation history</p>
+                    </div>
+                </div>
+            </div>
+            <button id="loadMoreBtn" class="load-more" hidden>Load next 2000 records</button>
+        </div>
+
+        <!-- Resizer between middle and right -->
+        <div class="resizer" data-direction="right"></div>
+
+        <!-- Right Panel: Message Details -->
+        <div class="panel right-panel">
+            <div class="panel-header">
+                <h2>Message Details</h2>
+            </div>
+            <div class="panel-content">
+                <div id="messageDetails" class="message-details">
+                    <div class="empty-state">
+                        <p>Click a message to view details</p>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script src="static/js/app.js" type="module"></script>
+</body>
+</html>

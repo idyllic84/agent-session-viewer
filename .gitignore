@@ -3,6 +3,12 @@
 *.db
 *.db-shm
 *.db-wal
+*.sqlite
+*.sqlite3
+*.sqlite-wal
+*.sqlite-shm
+*.sqlite3-wal
+*.sqlite3-shm
 
 # Python
 __pycache__/
@@ -33,3 +39,15 @@ Thumbs.db
 
 # Logs
 *.log
+
+# Private runtime configuration/data (never source)
+.env
+.env.*
+!.env.example
+*.key
+*.token
+*.secret
+server/state/
+local/state/
+server/deploy/secrets/
+server/deploy/artifacts/

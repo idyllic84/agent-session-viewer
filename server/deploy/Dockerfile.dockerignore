@@ -1,0 +1,43 @@
+# Dockerfile-specific deny-by-default context. Directory allow rules require
+# re-excluding descendants, otherwise a negated parent includes its whole tree.
+**
+!server/
+server/**
+!server/*.py
+!server/contracts/
+server/contracts/**
+!server/contracts/*.py
+!server/static/
+server/static/**
+!server/static/index.html
+!server/static/favicon.ico
+!server/static/*.js
+!server/static/*.css
+!server/static/js/
+server/static/js/**
+!server/static/js/*.js
+!server/static/css/
+server/static/css/**
+!server/static/css/*.css
+# Final hard denials also protect against accidentally broadened allow rules.
+local/**
+deamon/**
+tests/**
+**/.git
+**/.git/**
+**/__pycache__/**
+**/state/**
+**/secrets/**
+**/artifacts/**
+**/tests/**
+**/*.key
+**/*.token
+**/*.secret
+**/.env
+**/.env.*
+**/*.db
+**/*.db-*
+**/*.sqlite
+**/*.sqlite3
+**/*.jsonl
+**/*.log

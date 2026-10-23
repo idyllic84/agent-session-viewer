@@ -1,0 +1,36 @@
+# Direct local server, no tunnel and no real-history mounts.
+# From repo root: docker compose -f server/deploy/docker-compose.local.yml up -d --build
+name: claudeviewer-local
+services:
+  viewer:
+    build:
+      context: ../..
+      dockerfile: server/deploy/Dockerfile
+      args:
+        VCS_REF: ${VCS_REF:-unknown}
+    image: ${VIEWER_IMAGE:-agent-session-viewer:latest}
+    restart: unless-stopped
+    init: true
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    environment:
+      VIEWER_PUBLIC_ORIGIN: http://localhost:${VIEWER_LOCAL_PORT:-41880}
+      VIEWER_LOCAL_HTTP: "1"
+      VIEWER_DATA_DIR: /data
+      VIEWER_MAX_REQUEST_MIB: ${VIEWER_MAX_REQUEST_MIB:-32}
+    ports:
+      - "127.0.0.1:${VIEWER_LOCAL_PORT:-41880}:8080"
+    volumes:
+      - viewer-local-data:/data
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=64m,mode=1777
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
+    stop_grace_period: 30s
+
+volumes:
+  viewer-local-data:
