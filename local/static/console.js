@@ -52,8 +52,11 @@ async function refresh() {
 
 async function act(button, work) {
     button.disabled = true;
-    try { message(await work() || ''); } catch (error) { message(error.message); }
-    finally { button.disabled = false; await refresh(); }
+    let text;
+    try { text = await work() || ''; } catch (error) { text = error.message; }
+    button.disabled = false;
+    await refresh();      // update buttons/state first, then report the outcome
+    message(text);
 }
 
 const credentials = () => ({ url: $('cloudUrl').value.trim(), key: $('cloudKey').value.trim() });

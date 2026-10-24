@@ -72,12 +72,13 @@ try {
         if (result.exceptionDetails) throw new Error(JSON.stringify(result.exceptionDetails));
         return result.result.value;
     };
-    const waitFor = async expression => {
-        for (let i = 0; i < 150; i++) {
+    const waitFor = async (expression, attempts = 150) => {
+        for (let i = 0; i < attempts; i++) {
             if (await evaluate(expression)) return;
             await delay(100);
         }
-        throw new Error(`Browser condition not reached: ${expression}`);
+        const state = await evaluate(`(async () => JSON.stringify({upload: document.getElementById('uploadState')?.textContent, summary: document.getElementById('consoleSummary')?.textContent, message: document.getElementById('consoleMessage')?.textContent, cloud: await fetch('/api/cloud').then(r => r.json()).then(v => ({upload: v.upload, pending: v.pendingChanges, local: v.local?.lastSeq, acked: v.connection?.ackedSeq}))}))()`);
+        throw new Error(`Browser condition not reached: ${expression}; console: ${state}`);
     };
     await command('Runtime.enable');
     await command('Page.navigate', { url });
@@ -132,8 +133,10 @@ try {
     await waitFor('document.getElementById("consoleMessage").textContent.includes("Nothing was uploaded yet")');
     assert.equal(await evaluate('document.getElementById("cloudKey").value'), '');
     assert.ok(!await evaluate(`document.body.textContent.includes(${JSON.stringify(cloudKey)})`), 'key is never displayed again');
+    await waitFor('!document.getElementById("uploadStart").disabled');
     await evaluate('document.getElementById("uploadStart").click()');
-    await waitFor('document.getElementById("uploadState").textContent.includes("complete") && document.getElementById("consoleSummary").textContent.includes("up to date")');
+    // A real upload of ~2000 synthetic messages; allow for a slow/loaded machine.
+    await waitFor('document.getElementById("uploadState").textContent.includes("complete") && document.getElementById("consoleSummary").textContent.includes("up to date")', 900);
     assert.deepEqual(runtimeErrors, []);
     console.log('Real browser smoke test passed: local viewer (analysis only), inline references, live search, user counts, hidden empty/subagent sessions, pagination, XSS escaping, explicit re-import, console connect/test/save/upload with CSRF.');
 } finally {
