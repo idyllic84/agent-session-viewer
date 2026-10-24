@@ -11,7 +11,7 @@ class App {
         this.conversationView = new ConversationView('conversationHistory');
         this.messageDetailsView = new MessageDetailsView('messageDetails');
         this.panelResizer = new PanelResizer();
-        this.activeFilters = new Set(['user', 'assistant']);
+        this.activeFilters = new Set(['user', 'assistant', 'tool-use', 'tool-result']);
         this.currentSessionId = null;
         this.listGeneration = 0;
         this.messageGeneration = 0;
@@ -231,7 +231,7 @@ class App {
             if (generation !== this.messageGeneration) return;
             branchSelect.disabled = !page.session.metadata.defaultLeaf;
             document.getElementById('conversationTitle').textContent = page.session.name;
-            this.activeFilters = new Set(['user', 'assistant']);
+            this.activeFilters = new Set(['user', 'assistant', 'tool-use', 'tool-result']);
             document.getElementById('uuidSearch').value = '';
             this.conversationView.render(page.items);
             this.applyFilters();

@@ -3,15 +3,47 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Agent History Viewer</title>
-    <link rel="stylesheet" href="static/css/style.css">
+    <title>Agent Session Viewer · Local</title>
+    <meta name="local-csrf" content="__CSRF_TOKEN__">
+    <link rel="stylesheet" href="/static/css/style.css">
+    <link rel="stylesheet" href="/static/console.css">
 </head>
 <body>
+    <details class="console" id="cloudConsole">
+        <summary>Cloud sync console <span id="consoleSummary"></span></summary>
+        <div class="console-grid">
+            <section>
+                <h3>Local store</h3>
+                <div id="localStats">Loading…</div>
+            </section>
+            <section>
+                <h3>Cloud connection</h3>
+                <label>Cloud address <input id="cloudUrl" type="url" placeholder="https://history.example.com" autocomplete="off" spellcheck="false"></label>
+                <label>API key <input id="cloudKey" type="password" placeholder="Paste a key generated in the cloud console" autocomplete="off" spellcheck="false"></label>
+                <div class="console-actions">
+                    <button id="cloudTest">Test connection</button>
+                    <button id="cloudSave">Save</button>
+                    <button id="cloudForget" class="secondary">Forget connection</button>
+                </div>
+                <div id="cloudConnection"></div>
+            </section>
+            <section>
+                <h3>Upload</h3>
+                <div class="console-actions">
+                    <button id="uploadStart">Sync to cloud</button>
+                    <button id="uploadPause" class="secondary">Pause</button>
+                    <button id="uploadCancel" class="secondary">Cancel</button>
+                </div>
+                <div id="uploadState"></div>
+            </section>
+        </div>
+        <div id="consoleMessage" role="status" aria-live="polite"></div>
+    </details>
     <div class="container">
         <!-- Left Panel: Session List -->
         <div class="panel left-panel">
             <div class="panel-header">
-                <h2>Agent History · Read-only</h2>
+                <h2>Agent History · Local</h2>
                 <button id="reloadBtn">Reload</button>
             </div>
             <div class="filter-bar" id="sessionFilterBar">
@@ -28,7 +60,7 @@
             </div>
             <div class="sync-status" id="sessionSearchStatus" role="status" aria-live="polite"></div>
             <button id="resetSearchScopeBtn" class="scope-reset" hidden>Search all sources/projects</button>
-            <div class="sync-status" id="syncStatus" role="status">Local history only. Click Reload to import.</div>
+            <div class="sync-status" id="syncStatus" role="status">Local analysis store. Reload re-imports local history.</div>
             <details id="syncIssues" class="sync-status" hidden><summary>Sync issues</summary><pre id="syncIssueText"></pre></details>
             <div class="panel-content">
                 <div id="sessionList" class="session-list">
@@ -88,6 +120,7 @@
         </div>
     </div>
 
-    <script src="static/js/app.js" type="module"></script>
+    <script src="/static/js/app.js" type="module"></script>
+    <script src="/static/console.js" type="module"></script>
 </body>
 </html>

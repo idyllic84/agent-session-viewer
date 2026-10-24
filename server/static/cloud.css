@@ -1,9 +1,13 @@
 body { display: flex; flex-direction: column; }
 body > .container { flex: 1; min-height: 0; height: auto; }
-body > details { flex: none; max-height: 42vh; overflow: auto; padding: 6px 12px; }
-#cloudDevices > div { margin: 8px 0; padding: 8px; border-bottom: 1px solid var(--border-color); }
-#cloudDevices button { margin: 4px; }
-#cloudDevices pre { max-height: 150px; overflow: auto; white-space: pre-wrap; }
+body > details { flex: none; max-height: 48vh; overflow: auto; padding: 6px 12px; }
+.cloud-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 12px; margin-top: 8px; }
+.cloud-grid section { border: 1px solid var(--border-color, #ddd); border-radius: 6px; padding: 8px; }
+.cloud-grid h3 { margin: 0 0 6px; font-size: 13px; }
+.cloud-grid label { display: block; margin: 4px 0; }
+.cloud-grid input { width: 100%; box-sizing: border-box; }
+.hint { opacity: .8; margin: 0 0 6px; }
+#keyList > div { margin: 6px 0; padding: 6px 0; border-bottom: 1px solid var(--border-color, #ddd); overflow-wrap: anywhere; }
+#newKey { white-space: pre-wrap; overflow-wrap: anywhere; user-select: all; }
 /* Analysis-only cloud data has neither original-event replay nor saved branches. */
 #branchSelect, button[data-action="raw"] { display: none !important; }
-#newDeviceToken { white-space: pre-wrap; overflow-wrap: anywhere; user-select: all; }

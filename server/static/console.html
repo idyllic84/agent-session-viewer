@@ -1,0 +1,14 @@
+<details class="sync-status cloud-console" id="cloudConsole"><summary>Cloud console · upload keys &amp; password</summary>
+<div class="cloud-grid">
+<section><h3>Upload API keys</h3>
+<p class="hint">Each local computer needs its own key. Paste the key and this cloud address into the local server's console. A key is shown only once.</p>
+<label>Name <input id="keyName" maxlength="160" placeholder="e.g. work laptop"></label>
+<label>Expires after (days, optional) <input id="keyExpiry" type="number" min="1" max="3650"></label>
+<button id="createKey">Generate API key</button>
+<pre id="newKey" aria-live="polite"></pre>
+<div id="keyList"></div></section>
+<section><h3>Owner password</h3>
+<label>Current password <input id="currentPassword" type="password" autocomplete="current-password"></label>
+<label>New password (12+ characters) <input id="newPassword" type="password" autocomplete="new-password"></label>
+<button id="changePassword">Change password</button> <button id="logout" class="secondary">Sign out</button></section>
+</div><div id="cloudError" role="status" aria-live="polite"></div></details>

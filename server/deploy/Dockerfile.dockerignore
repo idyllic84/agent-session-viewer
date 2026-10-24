@@ -9,7 +9,7 @@ server/contracts/**
 !server/contracts/*.py
 !server/static/
 server/static/**
-!server/static/index.html
+!server/static/*.html
 !server/static/favicon.ico
 !server/static/*.js
 !server/static/*.css
@@ -21,7 +21,6 @@ server/static/css/**
 !server/static/css/*.css
 # Final hard denials also protect against accidentally broadened allow rules.
 local/**
-deamon/**
 tests/**
 **/.git
 **/.git/**
@@ -33,6 +32,7 @@ tests/**
 **/*.key
 **/*.token
 **/*.secret
+**/*password*
 **/.env
 **/.env.*
 **/*.db

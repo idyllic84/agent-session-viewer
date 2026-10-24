@@ -1,7 +1,7 @@
 """Claude JSONL projection with verified-prefix, tail-only message parsing."""
 from copy import deepcopy
 import hashlib
-from ..models import SessionDocument, blocks
+from server.contracts.models import SessionDocument, blocks
 from .base import SourceAdapter, SourceFile, SourceError, read_records
 
 

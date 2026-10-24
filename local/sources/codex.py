@@ -4,7 +4,7 @@ Execution completions are joined by call ID, never by text similarity. Context
 snapshots remain in raw_records, not duplicated in the conversation projection.
 """
 import json
-from ..models import SessionDocument, blocks, text
+from server.contracts.models import SessionDocument, blocks, text
 from .base import SourceAdapter, SourceError, read_records
 
 

@@ -1,0 +1,13 @@
+body { display: flex; flex-direction: column; }
+body > .container { flex: 1; min-height: 0; height: auto; }
+details.console { flex: none; max-height: 48vh; overflow: auto; padding: 6px 12px; border-bottom: 1px solid var(--border-color, #ddd); font-size: 13px; }
+details.console summary { cursor: pointer; font-weight: 600; }
+.console-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 12px; margin-top: 8px; }
+.console-grid section { border: 1px solid var(--border-color, #ddd); border-radius: 6px; padding: 8px; overflow-wrap: anywhere; }
+.console-grid h3 { margin: 0 0 6px; font-size: 13px; }
+.console-grid label { display: block; margin: 4px 0; }
+.console-grid input { width: 100%; box-sizing: border-box; }
+.console-actions { display: flex; flex-wrap: wrap; gap: 6px; margin: 6px 0; }
+#consoleMessage { margin-top: 6px; white-space: pre-wrap; }
+/* Analysis-only data: neither original-record replay nor saved branches exist. */
+#branchSelect, button[data-action="raw"] { display: none !important; }

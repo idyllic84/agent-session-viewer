@@ -1,4 +1,4 @@
-from ..models import SessionDocument, blocks, searchable_text
+from server.contracts.models import SessionDocument, blocks, searchable_text
 from .base import SourceAdapter, SourceError, read_records
 
 

@@ -4,12 +4,12 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { spawn, execFileSync } from 'node:child_process';
-const [origin = 'http://localhost:41880', ownerFile, mode = 'empty'] = process.argv.slice(2);
-assert.ok(ownerFile, 'Pass a private owner-key file; never pass the key itself as an argument');
+const [origin = 'http://localhost:41880', passwordFile, mode = 'empty'] = process.argv.slice(2);
+assert.ok(passwordFile, 'Pass a private owner-password file; never pass the password itself as an argument');
 assert.ok(/^http:\/\/(localhost|127\.0\.0\.1):\d+$/.test(origin), 'Local Docker origin required');
 const edge = process.env.EDGE_BIN || 'C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe';
 assert.ok(fs.existsSync(edge), 'Set EDGE_BIN to Edge/Chromium');
-const owner = fs.readFileSync(ownerFile, 'utf8').trim();
+const owner = fs.readFileSync(passwordFile, 'utf8').trim();
 const root = fs.mkdtempSync(path.join(os.tmpdir(), 'viewer-docker-browser-'));
 const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
 let browser, socket;
@@ -45,24 +45,24 @@ try {
     };
     const waitFor = async expression => {
         for (let i = 0; i < 150; i++) { if (await evaluate(expression)) return; await delay(100); }
-        const diagnostic = await evaluate(`JSON.stringify({path:location.pathname, login:!!document.querySelector('input[name=key]'), cloudMeta:!!document.querySelector('meta[name=cloud-csrf]'), sourceOptions:document.querySelectorAll('#sourceSelect option').length, status:document.getElementById('sessionSearchStatus')?.textContent, cloudError:document.getElementById('cloudError')?.textContent, responseError:(()=>{try{const e=JSON.parse(document.body.textContent).error;return e&&{code:e.code,message:e.message}}catch{return null}})()})`);
+        const diagnostic = await evaluate(`JSON.stringify({path:location.pathname, login:!!document.querySelector('input[name=password]'), cloudMeta:!!document.querySelector('meta[name=cloud-csrf]'), sourceOptions:document.querySelectorAll('#sourceSelect option').length, status:document.getElementById('sessionSearchStatus')?.textContent, cloudError:document.getElementById('cloudError')?.textContent, responseError:(()=>{try{const e=JSON.parse(document.body.textContent).error;return e&&{code:e.code,message:e.message}}catch{return null}})()})`);
         throw new Error(`Browser condition not reached: ${diagnostic}; runtime errors: ${JSON.stringify(errors)}`);
     };
     await command('Runtime.enable'); await command('Network.enable'); await command('Page.navigate', { url: origin });
-    await waitFor('Boolean(document.querySelector("input[name=key]"))');
-    await evaluate(`document.querySelector('input[name=key]').value=${JSON.stringify(owner)};document.querySelector('form').requestSubmit()`);
+    await waitFor('Boolean(document.querySelector("input[name=password]"))');
+    await evaluate(`document.querySelector('input[name=password]').value=${JSON.stringify(owner)};document.querySelector('form').requestSubmit()`);
     await waitFor('Boolean(document.querySelector("meta[name=cloud-csrf]")) && document.querySelectorAll("#sourceSelect option").length===6');
     assert.equal(await evaluate('document.getElementById("reloadBtn").textContent'), 'Refresh');
-    assert.ok(await evaluate('Boolean(document.getElementById("createDevice"))'));
-    assert.ok(await evaluate('Boolean(document.getElementById("deviceControl"))'));
+    assert.ok(await evaluate('Boolean(document.getElementById("createKey"))'));
+    assert.ok(await evaluate('Boolean(document.getElementById("changePassword"))'));
     const security = await evaluate(`(async()=>({
-        denied:(await fetch('/api/devices',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name:'must-not-create'})})).status,
-        devices:(await (await fetch('/api/devices')).json()).length,
+        denied:(await fetch('/api/keys',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name:'must-not-create'})})).status,
+        keys:(await (await fetch('/api/keys')).json()).length,
         sessions:(await (await fetch('/api/sessions')).json()).total
     }))()`);
     assert.equal(security.denied, 403);
     if (mode === '--analysis-data') {
-        assert.ok(security.devices > 0); assert.ok(security.sessions > 0);
+        assert.ok(security.keys > 0); assert.ok(security.sessions > 0);
         await waitFor('document.querySelectorAll(".session-item").length > 0');
         await evaluate('document.querySelector(".session-item").click()');
         await waitFor('document.querySelectorAll(".message-item").length === 5');
@@ -72,13 +72,19 @@ try {
         await waitFor('document.getElementById("messageDetails").textContent.includes("success")');
         assert.equal(await evaluate('getComputedStyle(document.querySelector("button[data-action=raw]")).display'), 'none');
     } else {
-        assert.equal(security.devices, 0); assert.equal(security.sessions, 0);
+        assert.equal(security.keys, 0); assert.equal(security.sessions, 0);
+        await evaluate('document.getElementById("cloudConsole").open=true; document.getElementById("keyName").value="browser created"; document.getElementById("createKey").click()');
+        await waitFor('document.getElementById("newKey").textContent.includes("asv_") && document.querySelectorAll("#keyList > div").length === 1');
+        const shown = await evaluate('document.getElementById("newKey").textContent.match(/asv_[A-Za-z0-9_-]+/)[0]');
+        await evaluate('location.reload()');
+        await waitFor('document.querySelectorAll("#keyList > div").length === 1');
+        assert.ok(!await evaluate(`document.documentElement.outerHTML.includes(${JSON.stringify(shown)})`), 'key shown only once');
     }
     assert.deepEqual(loginOrigins, [origin]);
     assert.deepEqual(errors, []);
     console.log(mode === '--analysis-data'
         ? 'Docker analysis browser passed: timestamped messages, prose, invocation and outcome summary visible; original replay hidden; auth/CSRF intact.'
-        : 'Docker browser passed: login, protected viewer/assets, cloud controls render, CSRF rejection, empty archive unchanged.');
+        : 'Docker browser passed: password login, protected viewer/assets, key console renders, CSRF rejection, key shown once.');
 } finally {
     socket?.close();
     if (browser?.pid) {

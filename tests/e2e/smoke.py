@@ -1,149 +1,162 @@
-"""Synthetic Docker/daemon smoke test. Never discovers real Agent directories.
+"""Synthetic Docker smoke test: cloud container + a real local Web Server process.
 
-Use only with an isolated local Compose project. May restart only explicitly
-named claudeviewer-smoke* projects. No key/token values are printed or reported.
+Use only with an isolated local Compose project (e.g. claudeviewer-smoke). May
+restart only explicitly named claudeviewer-smoke* projects. Never discovers
+real Agent directories; never prints passwords or API keys.
 """
 import argparse
 import json
 import os
 from pathlib import Path
 import re
+import socket
 import subprocess
 import sys
 import tempfile
 import time
-from urllib.parse import quote,urlsplit
+from urllib.parse import quote, urlsplit
 import uuid
 
 import requests
 
-ROOT=Path(__file__).resolve().parents[2]
-COMPOSE=ROOT/'server/deploy/docker-compose.local.yml'
+ROOT = Path(__file__).resolve().parents[2]
+COMPOSE = ROOT / 'server/deploy/docker-compose.local.yml'
+FLAGS = getattr(subprocess, 'CREATE_NO_WINDOW', 0)
 
 
-def wait(check,seconds=90):
-    deadline=time.monotonic()+seconds
-    while time.monotonic()<deadline:
+def wait(check, seconds=90):
+    deadline = time.monotonic() + seconds
+    while time.monotonic() < deadline:
         try:
-            result=check()
-            if result:return result
-        except (requests.RequestException,AssertionError,KeyError,ValueError):pass
+            result = check()
+            if result:
+                return result
+        except (requests.RequestException, AssertionError, KeyError, ValueError, IndexError):
+            pass
         time.sleep(.5)
     raise RuntimeError('Smoke check timed out (no credentials or payloads logged)')
 
 
-def run(origin,owner_file,*,restart_project=None):
-    parsed=urlsplit(origin)
-    if parsed.scheme!='http' or parsed.hostname not in ('localhost','127.0.0.1'):
-        raise ValueError('Smoke is restricted to an isolated loopback HTTP server')
+def run(origin, password_file, *, restart_project=None):
+    parsed = urlsplit(origin)
+    if parsed.scheme != 'http' or parsed.hostname not in ('localhost', '127.0.0.1'):
+        raise ValueError('Smoke is restricted to an isolated loopback HTTP cloud')
     if restart_project and not restart_project.startswith('claudeviewer-smoke'):
         raise ValueError('Restart is allowed only for explicitly named claudeviewer-smoke* test projects')
-    owner=Path(owner_file).read_text().strip();origin=origin.rstrip('/')
-    web=requests.Session();web.trust_env=False
-    def call(method,path,**kwargs):
-        response=web.request(method,origin+path,timeout=10,**kwargs)
-        response.raise_for_status();return response
+    password = Path(password_file).read_text().strip(); origin = origin.rstrip('/')
+    web = requests.Session(); web.trust_env = False
+
+    def call(method, path, **kwargs):
+        response = web.request(method, origin + path, timeout=10, **kwargs); response.raise_for_status(); return response
+
     def login():
-        page=call('GET','/auth/login')
-        nonce=re.search(r'name="nonce" value="([^"]+)"',page.text).group(1)
-        response=call('POST','/auth/login',data={'nonce':nonce,'key':owner},headers={'Origin':origin},allow_redirects=False)
-        assert response.status_code==302
-        page=call('GET','/')
-        csrf=re.search(r'name="cloud-csrf" content="([^"]+)"',page.text).group(1)
-        return {'Origin':origin,'X-CSRF-Token':csrf}
-    wait(lambda:call('GET','/healthz').json().get('ok'))
-    headers=login();checks=['health','owner login']
-    device=call('POST','/api/devices',headers=headers,json={'name':'Docker synthetic smoke','control':True}).json()
-    did=device['deviceId'];token=device['token']
-    device_http=requests.Session();device_http.trust_env=False
-    def machine(path,body=None):
-        response=device_http.request('GET' if body is None else 'POST',origin+path,json=body,
-            headers={'Authorization':'Bearer '+token},timeout=10)
-        response.raise_for_status();return response.json()
-    def dashboard():return next(d for d in call('GET','/api/devices').json() if d['id']==did)
-    sid='docker-smoke-'+uuid.uuid4().hex
+        page = call('GET', '/auth/login')
+        nonce = re.search(r'name="nonce" value="([^"]+)"', page.text).group(1)
+        response = call('POST', '/auth/login', data={'nonce': nonce, 'password': password}, headers={'Origin': origin}, allow_redirects=False)
+        assert response.status_code == 302
+        csrf = re.search(r'name="cloud-csrf" content="([^"]+)"', call('GET', '/').text).group(1)
+        return {'Origin': origin, 'X-CSRF-Token': csrf}
+    wait(lambda: call('GET', '/healthz').json().get('ok'))
+    headers = login(); checks = ['health', 'owner password login']
+    assert web.get(origin + '/ingest/v1/status', timeout=10).status_code == 401
+    key = call('POST', '/api/keys', headers=headers, json={'name': 'Docker synthetic smoke'}).json()['key']
+    checks.append('API key generated in the cloud console')
+    sid = 'docker-smoke-' + uuid.uuid4().hex
     with tempfile.TemporaryDirectory(prefix='viewer-docker-smoke-') as temp:
-        temp=Path(temp);source=temp/'claude';source.mkdir();history=source/'history.jsonl'
-        process_marker='SYNTHETIC_PROCESS_OMITTED_'+uuid.uuid4().hex
-        rows=[{'type':'user','sessionId':sid,'uuid':'u','message':{'content':'Docker synthetic question'}},
-              {'type':'assistant','uuid':'a','message':{'content':[{'type':'text','text':'Docker synthetic answer'},
-                {'type':'tool_use','id':'call','name':'Agent','input':{'prompt':'Allowed synthetic task'}}]}},
-              {'type':'progress','content':process_marker},
-              {'type':'user','uuid':'result','message':{'content':[{'type':'tool_result','tool_use_id':'call','content':process_marker}]}}]
-        history.write_text(''.join(json.dumps(r)+'\n' for r in rows),encoding='utf-8')
-        (source/'agent-child.jsonl').write_text(json.dumps({'type':'user','sessionId':'child','message':{'content':process_marker}})+'\n')
-        roots=temp/'roots.json';roots.write_text(json.dumps({'claude':[str(source)]}))
-        key=temp/'device.token';key.write_text(token);os.chmod(key,0o600)
-        log=temp/'daemon.log'
-        with log.open('wb') as output:
-            process=subprocess.Popen([sys.executable,'-u','-m','deamon','--cloud',origin,
-                '--token-file',str(key),'--roots-file',str(roots),'--quiet-seconds','0',
-                '--batch-bytes','8192','--progress-query-files','2','--allow-http-loopback'],
-                cwd=ROOT,stdin=subprocess.DEVNULL,stdout=output,stderr=subprocess.STDOUT,
-                creationflags=getattr(subprocess,'CREATE_NO_WINDOW',0))
-        try:
-            wait(lambda:dashboard()['online'])
-            assert call('GET','/api/sessions',params={'q':sid}).json()['total']==0
-            checks.append('idle daemon does not scan')
-            def sync_job():
-                job=call('POST',f'/api/devices/{did}/jobs',headers={**headers,'Idempotency-Key':uuid.uuid4().hex},json={'sources':['claude']}).json()
-                def finished():
-                    value=dashboard().get('job')
-                    if value and value['id']==job['id'] and value['state'] in ('FAILED','CANCELLED','EXPIRED'):
-                        raise RuntimeError('Synthetic cloud task did not succeed')
-                    return value and value['id']==job['id'] and value['state']=='SUCCEEDED'
-                wait(finished)
-            sync_job();checks.append('cloud command -> FIFO GET -> received ACK -> stateless daemon -> batch POST')
-            task=dashboard()['job'];assert task['received_at']>0
-            assert not any(entry['id']==task['id'] for entry in dashboard()['queue'])
-            checks.append('received ACK dequeues pending entry; execution history remains')
-            session=call('GET','/api/sessions',params={'q':sid}).json()['items'][0]
-            assert session['messageCount']==4 and session['userMessageCount']==1
-            cloud_sid=quote(session['id'],safe='')
-            assert web.get(origin+f'/api/sessions/{cloud_sid}/records',timeout=10).status_code==410
-            messages=call('GET',f'/api/sessions/{cloud_sid}/messages').json()
-            assert 'Allowed synthetic task' in json.dumps(messages) and process_marker not in json.dumps(messages)
-            checks.append('analysis only: timestamped prose/calls + outcome flags; no native records/processes')
-            progress=machine('/sync/v1/progress/query',{'files':[{'source':'claude','path':str(history.resolve())}]})['files'][0]
-            assert progress['checkpoint']['offset']==history.stat().st_size
-            checks.append('progress owned by cloud')
-            if restart_project:
-                env={**os.environ,'VIEWER_LOCAL_PORT':str(parsed.port or 80)}
-                result=subprocess.run(['docker','compose','-p',restart_project,'-f',str(COMPOSE),'restart','viewer'],
-                    env=env,capture_output=True,text=True,creationflags=getattr(subprocess,'CREATE_NO_WINDOW',0))
-                if result.returncode:raise RuntimeError('Restart of isolated smoke project failed')
-                wait(lambda:call('GET','/healthz').json().get('ok'))
-                # Existing browser cookie, owner key, device and checkpoint survive.
-                assert call('GET','/api/sources').status_code==200
-                assert machine('/sync/v1/capabilities')['deviceId']==did
-                after=machine('/sync/v1/progress/query',{'files':[{'source':'claude','path':str(history.resolve())}]})['files'][0]
-                assert after==progress
-                checks.append('container restart preserves cookies/device/cloud cursor')
-            with history.open('a') as stream:
-                stream.write(json.dumps({'type':'user','sessionId':sid,'uuid':'later','message':{'content':'Synthetic incremental followup'}})+'\n')
-            sync_job()
-            assert call('GET',f'/api/sessions/{cloud_sid}/messages').json()['total']==5
-            checks.append('incremental followup without duplicate messages')
-            assert not list(temp.rglob('*.db')) and not list(temp.rglob('*checkpoint*'))
-            checks.append('no local daemon progress files')
-        finally:
+        temp = Path(temp); source = temp / 'claude'; source.mkdir(); history = source / 'history.jsonl'
+        marker = 'SYNTHETIC_PROCESS_OMITTED_' + uuid.uuid4().hex
+        rows = [{'type': 'user', 'sessionId': sid, 'uuid': 'u', 'timestamp': '2026-10-23T01:02:03Z', 'message': {'content': 'Docker synthetic question'}},
+                {'type': 'assistant', 'uuid': 'a', 'timestamp': '2026-10-23T01:02:04Z', 'message': {'content': [{'type': 'text', 'text': 'Docker synthetic answer'},
+                 {'type': 'tool_use', 'id': 'call', 'name': 'Agent', 'input': {'prompt': 'Allowed synthetic task'}}]}},
+                {'type': 'progress', 'content': marker},
+                {'type': 'user', 'uuid': 'result', 'timestamp': '2026-10-23T01:02:05Z', 'message': {'content': [{'type': 'tool_result', 'tool_use_id': 'call', 'content': marker}]}}]
+        history.write_text(''.join(json.dumps(r) + '\n' for r in rows), encoding='utf-8')
+        (source / 'agent-child.jsonl').write_text(json.dumps({'type': 'user', 'sessionId': 'child', 'message': {'content': marker}}) + '\n')
+        roots = temp / 'roots.json'
+        roots.write_text(json.dumps({'claude': [str(source)], 'codex': [], 'copilot_cli': [], 'pi': [], 'vscode_chat': []}))
+        with socket.socket() as sock:
+            sock.bind(('127.0.0.1', 0)); port = sock.getsockname()[1]
+        local = f'http://localhost:{port}'; log = temp / 'local.log'
+        command = [sys.executable, '-u', '-m', 'local', '--port', str(port), '--database', str(temp / 'state/local.db'),
+                   '--roots-file', str(roots), '--quiet-seconds', '0', '--credential-store', 'file']
+        lan = requests.Session(); lan.trust_env = False
+
+        def start():
+            output = log.open('ab')
+            process = subprocess.Popen(command, cwd=ROOT, stdin=subprocess.DEVNULL, stdout=output, stderr=subprocess.STDOUT, creationflags=FLAGS)
+            output.close()
+            page = wait(lambda: lan.get(local + '/', timeout=5))
+            return process, {'X-CSRF-Token': re.search(r'name="local-csrf" content="([^"]+)"', page.text).group(1), 'Origin': local}
+
+        def stop(process):
             process.terminate()
-            try:process.wait(timeout=10)
-            except subprocess.TimeoutExpired:process.kill();process.wait(timeout=10)
-    return {'ok':True,'origin':origin,'checks':checks,'syntheticOnly':True}
+            try:
+                process.wait(timeout=10)
+            except subprocess.TimeoutExpired:
+                process.kill(); process.wait(timeout=10)
+
+        def upload(local_headers):
+            lan.post(local + '/api/cloud/upload/start', headers=local_headers, timeout=10).raise_for_status()
+            state = wait(lambda: (lambda s: s if not s['upload']['running'] and s['upload']['state'] != 'idle' else None)(
+                lan.get(local + '/api/cloud', timeout=10).json()))
+            assert state['upload']['state'] == 'complete', state['upload'].get('error')
+            return state
+        process, local_headers = start()
+        try:
+            assert lan.get(local + '/api/sessions', timeout=10).json()['total'] == 1
+            checks.append('local server imported history before listening (no cloud contact)')
+            assert call('GET', '/api/sessions', params={'q': sid}).json()['total'] == 0
+            response = lan.put(local + '/api/cloud/connection', headers=local_headers, json={'url': origin, 'key': key}, timeout=30)
+            assert response.status_code == 200, response.text
+            assert key not in lan.get(local + '/api/cloud', timeout=10).text
+            assert call('GET', '/api/sessions', params={'q': sid}).json()['total'] == 0
+            checks.append('console saves address + key (key never echoed); saving does not upload')
+            upload(local_headers)
+            session = call('GET', '/api/sessions', params={'q': sid}).json()['items'][0]
+            assert session['messageCount'] == 4 and session['userMessageCount'] == 1 and session['uploadedBy'] == 'Docker synthetic smoke'
+            cloud_sid = quote(session['id'], safe='')
+            assert web.get(origin + f'/api/sessions/{cloud_sid}/records', timeout=10).status_code == 410
+            messages = call('GET', f'/api/sessions/{cloud_sid}/messages').json()
+            assert 'Allowed synthetic task' in json.dumps(messages) and marker not in json.dumps(messages)
+            assert all(m['timestampSource'] == 'source' for m in messages['items'])
+            checks.append('explicit upload: analysis only (prose, call, outcome, timestamps); no process/subagent bodies')
+            if restart_project:
+                env = {**os.environ, 'VIEWER_LOCAL_PORT': str(parsed.port or 80)}
+                result = subprocess.run(['docker', 'compose', '-p', restart_project, '-f', str(COMPOSE), 'restart', 'viewer'],
+                                        env=env, capture_output=True, text=True, creationflags=FLAGS)
+                if result.returncode:
+                    raise RuntimeError('Restart of isolated smoke project failed')
+                wait(lambda: call('GET', '/healthz').json().get('ok'))
+                assert call('GET', '/api/sources').status_code == 200
+                checks.append('container restart preserves password, browser session, key and data')
+            stop(process)
+            with history.open('a') as stream:
+                stream.write(json.dumps({'type': 'user', 'sessionId': sid, 'uuid': 'later', 'timestamp': '2026-10-23T01:03:00Z',
+                                         'message': {'content': 'Synthetic incremental followup'}}) + '\n')
+            process, local_headers = start()
+            state = upload(local_headers)
+            assert call('GET', f'/api/sessions/{cloud_sid}/messages').json()['total'] == 5
+            assert state['upload']['batches'] == 1
+            checks.append('local restart: incremental import then incremental upload, no duplicates')
+        finally:
+            stop(process)
+        assert key.split('_', 2)[2] not in log.read_text(errors='replace')
+        checks.append('no API key in local logs')
+    return {'ok': True, 'origin': origin, 'checks': checks, 'syntheticOnly': True}
 
 
 def main():
-    parser=argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--origin',default='http://localhost:41881')
-    parser.add_argument('--owner-key-file',required=True)
+    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument('--origin', default='http://localhost:41881')
+    parser.add_argument('--password-file', required=True, help='Private file holding the cloud owner password')
     parser.add_argument('--restart-project')
     parser.add_argument('--report')
-    args=parser.parse_args();result=run(args.origin,args.owner_key_file,restart_project=args.restart_project)
-    rendered=json.dumps(result,indent=2)
+    args = parser.parse_args(); result = run(args.origin, args.password_file, restart_project=args.restart_project)
+    rendered = json.dumps(result, indent=2)
     if args.report:
-        path=Path(args.report);path.parent.mkdir(parents=True,exist_ok=True);path.write_text(rendered+'\n')
+        path = Path(args.report); path.parent.mkdir(parents=True, exist_ok=True); path.write_text(rendered + '\n')
     print(rendered)
 
 
-if __name__=='__main__':main()
+if __name__ == '__main__':
+    main()

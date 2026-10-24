@@ -5,7 +5,7 @@ len(v) elements. The raw operation log is never mutated during reconstruction.
 """
 from copy import deepcopy
 from urllib.parse import unquote, urlparse
-from ..models import SessionDocument, blocks, compact_value, text
+from server.contracts.models import SessionDocument, blocks, compact_value, text
 from .base import SourceAdapter, SourceFile, SourceError, SnapshotRecords, read_records, read_json
 
 

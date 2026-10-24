@@ -238,8 +238,15 @@ def is_internal(raw):
 
 def project(document,info,*,raw_context=None,scope_context=None):
     raw=dict(raw_context or {});raw.update(dict(document.records));scope_context=scope_context or {}
-    definitions=calls_from(list(raw.values()))
-    for state in {**scope_context,**document.scope_states}.values():calls_from(state,definitions)
+    cache={}
+    def definitions():
+        # Global fallback only; most calls are defined in their own record. A
+        # lazy scan avoids walking huge snapshot/replay context on every batch.
+        if 'value' not in cache:
+            found=calls_from(list(raw.values()))
+            for state in {**scope_context,**document.scope_states}.values():calls_from(state,found)
+            cache['value']=found
+        return cache['value']
     output={};positions={};scopes={}
     def add(original,content,kind,role,part,*,cid=None,success=None,index=None,scope=None):
         index=original['rawRecord'] if index is None else index
@@ -296,7 +303,7 @@ def project(document,info,*,raw_context=None,scope_context=None):
                 previous_call=cid
                 request=request_for(document,message,scope_context)
                 exact=calls_from(request if request is not None else native)
-                definition=exact.get(cid,definitions.get(cid,{}))
+                definition=exact[cid] if cid in exact else definitions().get(cid,{})
                 args=no_attachments(definition.get('input',block.get('input',{})))
                 if args is OMIT:args={}
                 name=definition.get('name') or block.get('name') or 'tool'

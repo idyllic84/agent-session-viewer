@@ -157,7 +157,8 @@ class Database:
             if setting and setting[0] == SEARCH_POLICY_VERSION:
                 return 0
             total = conn.execute('SELECT COUNT(*) FROM messages').fetchone()[0]
-            print(f'[index] rebuilding user/assistant-only search for {total} messages', flush=True)
+            if total:
+                print(f'[index] rebuilding user/assistant-only search for {total} messages', flush=True)
             # BEGIN explicitly: trigger DDL must roll back together with the
             # index/text mappings. Never use executescript (implicit commit).
             conn.execute('BEGIN IMMEDIATE')
@@ -188,7 +189,8 @@ class Database:
                     last_log = time.monotonic()
             conn.execute("INSERT INTO archive_settings VALUES('search_policy',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
                          (SEARCH_POLICY_VERSION,))
-            print(f'[index] user/assistant search ready: {indexed}/{total} messages indexed', flush=True)
+            if total:
+                print(f'[index] user/assistant search ready: {indexed}/{total} messages indexed', flush=True)
             return indexed
 
     def file_states(self):
@@ -366,11 +368,8 @@ class Database:
             # their IDs and compressed JSON/raw payloads are not regenerated.
             if document.changed_scopes:
                 conn.execute('UPDATE messages SET order_id=-order_id-1 WHERE session_id=?', (document.id,))
-                conn.execute('''WITH ordered AS (
-                    SELECT m.message_pk,ROW_NUMBER() OVER(ORDER BY p.major,p.minor,m.message_pk)-1 AS n
-                    FROM messages m JOIN projection_messages p ON p.message_pk=m.message_pk WHERE m.session_id=?)
-                    UPDATE messages SET order_id=(SELECT n FROM ordered WHERE ordered.message_pk=messages.message_pk)
-                    WHERE session_id=?''', (document.id, document.id))
+                conn.execute('''UPDATE messages SET order_id=ordered.n FROM (SELECT m.message_pk,ROW_NUMBER() OVER(ORDER BY p.major,p.minor,m.message_pk)-1 AS n FROM messages m JOIN projection_messages p ON p.message_pk=m.message_pk WHERE m.session_id=?) AS ordered
+                    WHERE messages.message_pk=ordered.message_pk''', (document.id,))
             count = conn.execute('SELECT COUNT(*) FROM messages WHERE session_id=?', (document.id,)).fetchone()[0]
             document.metadata['userMessageCount'] = old_users - removed_users + sum(is_user_message(m) for m in document.messages)
             conn.execute('''UPDATE sessions SET project=?,name=?,message_count=?,last_modified=?,fingerprint=?,

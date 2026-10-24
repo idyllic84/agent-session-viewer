@@ -1,10 +1,18 @@
-"""Synthetic local server for the optional dependency-free Edge smoke test."""
+"""Synthetic local + cloud servers for the optional dependency-free Edge smoke test.
+
+Prints only the local URL. The synthetic cloud origin and its throwaway API key
+are written to files in the temporary directory (never printed).
+"""
 import json
 from pathlib import Path
 import sys
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
-from local.server import create_app
-from local.service import ClaudeViewerService
+from threading import Thread
+from local.app import create_app
+from local.archive import LocalArchive
+from local.service import LocalService
+from server.app import create_app as create_cloud
+from server.archive import CloudArchive
 from local.sources.pi import PiAdapter
 from local.sources.claude import ClaudeAdapter
 from local.sources.codex import CodexAdapter
@@ -48,8 +56,16 @@ def main():
     empty = chat.parent / 'empty.json'
     empty.write_text(json.dumps({'sessionId': 'empty', 'requests': []}), encoding='utf-8')
     adapters = [PiAdapter([pi]), ClaudeAdapter([claude]), CodexAdapter([]), CopilotCLIAdapter([]), VSCodeChatAdapter([vscode])]
-    service = ClaudeViewerService(root / 'archive.db', adapters, skip_recent_seconds=0)
-    service.initialize(); service.sync_sessions()
+    cloud = CloudArchive(root / 'cloud' / 'cloud.db'); cloud.set_password('synthetic owner password', require_current=False)
+    cloud_server = make_server('127.0.0.1', 0, None, threaded=True)
+    origin = f'http://127.0.0.1:{cloud_server.server_port}'
+    cloud_server.app = create_cloud(cloud, session_secret='s' * 48, public_origin=origin, allow_http=True)
+    Thread(target=cloud_server.serve_forever, daemon=True).start()
+    (root / 'cloud-origin.txt').write_text(origin)
+    (root / 'cloud-key.txt').write_text(cloud.create_key('browser fixture')['key'])
+    service = LocalService(LocalArchive(root / 'state' / 'local.db'), adapters, quiet_seconds=0, credential_backend='file',
+                           log=lambda *_: None)
+    service.import_history()
     app = create_app(service)
     server = make_server('127.0.0.1', 0, app, threaded=True)
     print(f'http://127.0.0.1:{server.server_port}', flush=True)

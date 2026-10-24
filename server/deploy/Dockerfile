@@ -6,10 +6,10 @@ ENV PYTHONUNBUFFERED=1 PYTHONDONTWRITEBYTECODE=1 VIEWER_DATA_DIR=/data VIEWER_PO
 RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates python3 python-is-python3 python3-flask python3-waitress \
     && rm -rf /var/lib/apt/lists/*
-# Explicit code/asset COPY: no local/, deamon, tests, histories, keys or databases.
+# Explicit code/asset COPY: no local/, tests, histories, keys or databases.
 COPY server/*.py ./server/
 COPY server/contracts/*.py ./server/contracts/
-COPY server/static/index.html server/static/favicon.ico ./server/static/
+COPY server/static/*.html server/static/favicon.ico ./server/static/
 COPY server/static/js/*.js ./server/static/js/
 COPY server/static/css/*.css ./server/static/css/
 COPY server/static/*.js server/static/*.css ./server/static/

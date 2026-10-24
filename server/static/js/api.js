@@ -17,8 +17,8 @@ export async function fetchSessions(source = '', query = '', signal) {
     } while (cursor !== null);
     return items;
 }
-// The shared Reload button refreshes cloud reads; only the Devices panel can
-// explicitly enqueue a locally approved task. No local scanner exists here.
+// The shared Reload button only refreshes cloud reads. Data arrives when a
+// local server's console uploads it; the cloud never commands local computers.
 export function syncSessions() { return fetchSyncStatus(); }
 export function fetchSyncStatus() { return requestJson('/api/sync/status'); }
 const revisions = new Map();

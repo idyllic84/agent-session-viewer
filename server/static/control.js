@@ -1,61 +1,58 @@
+// Cloud console: upload API keys and owner password. The cloud never commands local computers.
 const csrf = document.querySelector('meta[name=cloud-csrf]').content;
-const error = document.getElementById('cloudError');
-const devices = document.getElementById('cloudDevices');
+const $ = id => document.getElementById(id);
+const say = text => { $('cloudError').textContent = text || ''; };
 const node = (tag, text) => { const el = document.createElement(tag); el.textContent = text; return el; };
-const showToken = value => { document.getElementById('newDeviceToken').textContent = `Device: ${value.deviceId}\nSave this token to a private *.token file. Shown once:\n${value.token}`; };
+const when = seconds => seconds ? new Date(seconds * 1000).toLocaleString() : '—';
 async function api(path, body) {
     const response = await fetch(path, body === undefined ? {} : {
-        method: 'POST', headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': csrf,
-            'Idempotency-Key': crypto.randomUUID() }, body: JSON.stringify(body)
-    });
+        method: 'POST', headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': csrf }, body: JSON.stringify(body) });
     if (response.status === 401) { location.assign('/auth/login'); throw new Error('Login required'); }
     const value = await response.json();
     if (!response.ok) throw new Error(value.error?.message || `HTTP ${response.status}`);
     return value;
 }
+const origin = location.origin;
+function showKey(value) {
+    $('newKey').textContent = `Key for "${value.name}" (shown once — copy it now):\n${value.key}\n\nIn the local console use cloud address: ${origin}`;
+}
 async function refresh() {
     try {
-        const list = await api('/api/devices'); devices.replaceChildren();
-        for (const device of list) {
-            const row = node('div', `${device.name} · ${!device.active ? 'revoked' : device.online ? 'recent contact' : 'no recent contact'} · ${device.id}`);
-            const button = (label, path, body = {}, allowRevoked = false) => {
-                const el = node('button', label); el.disabled = !device.active && !allowRevoked;
+        const keys = await api('/api/keys'); const list = $('keyList'); list.replaceChildren();
+        for (const key of keys) {
+            const row = node('div', `${key.name} · ${key.keyId} · ${key.active ? 'active' : 'revoked'} · `
+                + `${key.bound ? 'bound to one computer' : 'not used yet'} · ${key.uploadedChanges} changes · `
+                + `${key.sessions} sessions · last upload ${when(key.lastUpload)}${key.expires ? ' · expires ' + when(key.expires) : ''}`);
+            const button = (label, action, confirmText) => {
+                const el = node('button', label); el.className = 'secondary';
                 el.addEventListener('click', async () => {
+                    if (confirmText && !confirm(confirmText)) return;
                     el.disabled = true;
-                    try { const value = await api(path, body); if (value.token) showToken(value); error.textContent = ''; await refresh(); }
-                    catch (e) { error.textContent = e.message; el.disabled = false; }
-                }); row.append(el);
+                    try { const value = await api(`/api/keys/${key.clientId}/${action}`, {}); if (value.key) showKey(value); say(''); await refresh(); }
+                    catch (e) { say(e.message); el.disabled = false; }
+                });
+                row.append(' ', el);
             };
-            if (device.active && device.control) {
-                button('Enqueue sync', `/api/devices/${device.id}/jobs`, { sources: [] });
-                if (device.job && ['QUEUED', 'RUNNING', 'PAUSED'].includes(device.job.state)) {
-                    for (const [label, action] of [['Pause', 'pause'], ['Resume', 'run'], ['Cancel after current file', 'cancel']])
-                        button(label, `/api/devices/${device.id}/jobs/${device.job.id}/${action}`);
-                }
-            }
-            row.append(node('div', `Pending queue: ${device.queueCount ?? 0}`));
-            for (const task of device.queue || []) {
-                row.append(node('div', `Queued ${task.id.slice(0, 8)} · ${JSON.parse(task.sources).join(', ') || 'all approved sources'} · awaiting receipt ACK`));
-                button(`Cancel queued ${task.id.slice(0, 8)}`, `/api/devices/${device.id}/jobs/${task.id}/cancel`);
-            }
-            if (device.job) {
-                const status = node('pre', JSON.stringify({ state: device.job.state, desired: device.job.desired,
-                    progress: JSON.parse(device.job.progress), result: device.job.result && JSON.parse(device.job.result) }, null, 2));
-                row.append(status);
-            }
-            button('Rotate credential', `/api/devices/${device.id}/rotate`, {}, true);
-            button('Revoke device', `/api/devices/${device.id}/revoke`);
-            devices.append(row);
+            button('Rotate', 'rotate', 'Issue a new key for this computer? The old key stops working immediately; upload progress is kept.');
+            if (key.active) button('Revoke', 'revoke', 'Revoke this key? Uploaded data stays in the cloud.');
+            if (key.bound) button('Allow a new computer', 'unbind', 'Let this key upload a DIFFERENT local dataset? Already uploaded data is kept.');
+            list.append(row);
         }
-    } catch (e) { error.textContent = e.message; }
+    } catch (e) { say(e.message); }
 }
-document.getElementById('createDevice').addEventListener('click', async () => {
+$('createKey').addEventListener('click', async () => {
     try {
-        const value = await api('/api/devices', { name: document.getElementById('deviceName').value,
-            control: document.getElementById('deviceControl').checked, adopt: document.getElementById('deviceAdopt').checked });
-        showToken(value);
-        error.textContent = ''; await refresh();
-    } catch (e) { error.textContent = e.message; }
+        const days = $('keyExpiry').value ? Number($('keyExpiry').value) : null;
+        showKey(await api('/api/keys', { name: $('keyName').value, expiresDays: days }));
+        $('keyName').value = ''; say(''); await refresh();
+    } catch (e) { say(e.message); }
 });
-document.getElementById('reloadBtn').textContent = 'Refresh';
-refresh(); setInterval(refresh, 5000);
+$('changePassword').addEventListener('click', async () => {
+    try {
+        await api('/api/account/password', { currentPassword: $('currentPassword').value, newPassword: $('newPassword').value });
+        $('currentPassword').value = $('newPassword').value = ''; say('Password changed. Other browser sessions are signed out.');
+    } catch (e) { say(e.message); }
+});
+$('logout').addEventListener('click', async () => { await api('/auth/logout', {}); location.assign('/auth/login'); });
+$('reloadBtn').textContent = 'Refresh';
+refresh();

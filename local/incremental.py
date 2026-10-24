@@ -8,8 +8,8 @@ unrelated messages are never decoded or normalized on these incremental paths.
 from copy import deepcopy
 import hashlib
 import json
-from .models import SessionDocument, searchable_text
-from .sources.base import SourceError, SnapshotRecords, read_json, read_records
+from server.contracts.models import SessionDocument, searchable_text
+from .sources.base import PREFIX_HASHES, SourceError, SnapshotRecords, read_json, read_records
 from .sources.vscode_chat import replay_operations
 
 ENGINE_VERSION = 1
@@ -33,15 +33,8 @@ def _cursor(records):
 def _read_tail(entry, cursor):
     if not cursor or entry.path.stat().st_size < cursor['offset']:
         return None
-    digest = hashlib.sha256(str(entry.path).encode('utf-8'))
-    remaining = cursor['offset']
-    with entry.path.open('rb') as stream:
-        while remaining:
-            chunk = stream.read(min(1024 * 1024, remaining))
-            if not chunk:
-                return None
-            digest.update(chunk); remaining -= len(chunk)
-    if digest.hexdigest() != cursor['fingerprint']:
+    digest = PREFIX_HASHES.hasher(entry.path, cursor['offset'])
+    if digest is None or digest.hexdigest() != cursor['fingerprint']:
         return None
     return read_records(entry.path, offset=cursor['offset'], next_line=cursor['nextLine'],
                         prefix_hasher=digest, require_newline=True)

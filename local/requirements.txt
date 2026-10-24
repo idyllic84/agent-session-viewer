@@ -1,2 +1,6 @@
 flask>=2.3.0
+requests>=2.31
+# Optional: OS credential store for the cloud API key (falls back to an owner-only file)
+keyring>=24
+# Optional: response compression
 flask-compress>=1.14

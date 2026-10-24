@@ -1,4 +1,9 @@
-"""Viewer-owned archive v2: compressed JSON, shared text, position-free trigram FTS."""
+"""Local analysis archive: four analytical message kinds, compressed JSON, trigram FTS.
+
+This is the local business database of the local Web Server. It is NOT the old
+full-history viewer.db/claude.db format: a separate application ID prevents the
+new store from ever opening and mutating those preserved originals.
+"""
 from contextlib import contextmanager
 import hashlib
 import json
@@ -6,12 +11,13 @@ import os
 from pathlib import Path
 import sqlite3
 import time
-from .session_policy import is_subagent, is_user_message
+from server.contracts.session_policy import is_subagent, is_user_message
 from .codec import pack_json, unpack_json
-from .models import indexed_message_text
+from server.contracts.models import indexed_message_text
 
-SCHEMA_VERSION = 2
-ARCHIVE_APPLICATION_ID = 0x43565732
+SCHEMA_VERSION = 1
+ARCHIVE_APPLICATION_ID = 0x41534C31  # "ASL1": analysis store, local
+LEGACY_APPLICATION_ID = 0x43565732  # old full-history viewer archive
 SEARCH_POLICY_VERSION = 'user-assistant-prose-v1'
 
 
@@ -33,9 +39,11 @@ def trigram_query(query):
 
 class Database:
     def __init__(self, db_path=None):
-        self.db_path = Path(db_path or os.environ.get('VIEWER_DB') or Path(__file__).parent / 'viewer.db')
-        if self.db_path.resolve() in {(Path(__file__).resolve().parents[1] / 'claude.db'), (Path(__file__).parent / 'claude.db').resolve()}:
-            raise ValueError('The legacy claude.db is preserved; choose a separate VIEWER_DB')
+        self.db_path = Path(db_path or os.environ.get('LOCAL_VIEWER_DB') or Path(__file__).parent / 'state/local.db')
+        resolved = self.db_path.resolve()
+        here = Path(__file__).resolve().parent
+        if resolved.parent == here and (resolved.name in ('viewer.db', 'claude.db') or resolved.name.startswith('viewer.')):
+            raise ValueError('The original full-history databases are preserved; choose a database under local/state/')
         self.has_trigram = False
 
     @contextmanager
@@ -60,11 +68,12 @@ class Database:
             version = conn.execute('PRAGMA user_version').fetchone()[0]
             tables = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'")}
             application_id = conn.execute('PRAGMA application_id').fetchone()[0]
+            if application_id == LEGACY_APPLICATION_ID:
+                raise ValueError('This is an old full-history archive. It is kept read-only; '
+                                 'import it with python -m local.migrate instead of opening it as the local store')
             if (tables and application_id != ARCHIVE_APPLICATION_ID) or (
                     not tables and application_id not in (0, ARCHIVE_APPLICATION_ID)):
-                raise ValueError('Not a viewer-owned archive; existing databases will not be modified')
-            if version == 1:
-                raise ValueError('Archive schema v1 requires rebuilding. Stop the viewer and run python rebuild.py')
+                raise ValueError('Not a local analysis store; existing databases will not be modified')
             if version not in (0, SCHEMA_VERSION):
                 raise ValueError(f'Unsupported archive schema version: {version}')
             conn.execute(f'PRAGMA application_id = {ARCHIVE_APPLICATION_ID}')
@@ -156,7 +165,8 @@ class Database:
             if setting and setting[0] == SEARCH_POLICY_VERSION:
                 return 0
             total = conn.execute('SELECT COUNT(*) FROM messages').fetchone()[0]
-            print(f'[index] rebuilding user/assistant-only search for {total} messages', flush=True)
+            if total:
+                print(f'[index] rebuilding user/assistant-only search for {total} messages', flush=True)
             # BEGIN explicitly: trigger DDL must roll back together with the
             # index/text mappings. Never use executescript (implicit commit).
             conn.execute('BEGIN IMMEDIATE')
@@ -187,7 +197,8 @@ class Database:
                     last_log = time.monotonic()
             conn.execute("INSERT INTO archive_settings VALUES('search_policy',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
                          (SEARCH_POLICY_VERSION,))
-            print(f'[index] user/assistant search ready: {indexed}/{total} messages indexed', flush=True)
+            if total:
+                print(f'[index] user/assistant search ready: {indexed}/{total} messages indexed', flush=True)
             return indexed
 
     def file_states(self):
@@ -365,11 +376,8 @@ class Database:
             # their IDs and compressed JSON/raw payloads are not regenerated.
             if document.changed_scopes:
                 conn.execute('UPDATE messages SET order_id=-order_id-1 WHERE session_id=?', (document.id,))
-                conn.execute('''WITH ordered AS (
-                    SELECT m.message_pk,ROW_NUMBER() OVER(ORDER BY p.major,p.minor,m.message_pk)-1 AS n
-                    FROM messages m JOIN projection_messages p ON p.message_pk=m.message_pk WHERE m.session_id=?)
-                    UPDATE messages SET order_id=(SELECT n FROM ordered WHERE ordered.message_pk=messages.message_pk)
-                    WHERE session_id=?''', (document.id, document.id))
+                conn.execute('''UPDATE messages SET order_id=ordered.n FROM (SELECT m.message_pk,ROW_NUMBER() OVER(ORDER BY p.major,p.minor,m.message_pk)-1 AS n FROM messages m JOIN projection_messages p ON p.message_pk=m.message_pk WHERE m.session_id=?) AS ordered
+                    WHERE messages.message_pk=ordered.message_pk''', (document.id,))
             count = conn.execute('SELECT COUNT(*) FROM messages WHERE session_id=?', (document.id,)).fetchone()[0]
             document.metadata['userMessageCount'] = old_users - removed_users + sum(is_user_message(m) for m in document.messages)
             conn.execute('''UPDATE sessions SET project=?,name=?,message_count=?,last_modified=?,fingerprint=?,
@@ -554,29 +562,3 @@ class Database:
                 items.append(message)
             return {'items': items, 'total': total, 'session': session,
                     'nextCursor': offset + len(items) if offset + len(items) < total else None}
-
-    def get_raw_message(self, message_id):
-        with self.get_connection() as conn:
-            row = conn.execute('SELECT * FROM messages WHERE id=?', (message_id,)).fetchone()
-            if row is None:
-                return None
-            normalized = unpack_json(row['normalized_json'])
-            indices = [row['raw_record'], *normalized.get('relatedRawRecords', [])]
-            records = []
-            for index in dict.fromkeys(indices):
-                raw = conn.execute('SELECT raw_json FROM raw_records WHERE session_id=? AND record_index=?',
-                                   (row['session_id'], index)).fetchone()
-                if raw:
-                    records.append({'recordIndex': index, 'record': unpack_json(raw[0])})
-            path = conn.execute('SELECT path FROM sessions WHERE id=?', (row['session_id'],)).fetchone()[0]
-            return {'sourcePath': path, 'sourceLocator': normalized.get('sourceLocator'), 'records': records}
-
-    def get_records(self, session_id, offset=0, limit=50):
-        if self.get_session(session_id) is None:
-            return None
-        with self.get_connection() as conn:
-            total = conn.execute('SELECT COUNT(*) FROM raw_records WHERE session_id=?', (session_id,)).fetchone()[0]
-            rows = conn.execute('''SELECT record_index, raw_json FROM raw_records WHERE session_id=?
-                ORDER BY record_index LIMIT ? OFFSET ?''', (session_id, limit, offset)).fetchall()
-            return {'items': [{'recordIndex': r[0], 'record': unpack_json(r[1])} for r in rows], 'total': total,
-                    'nextCursor': offset + len(rows) if offset + len(rows) < total else None}
