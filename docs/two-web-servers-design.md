@@ -330,6 +330,14 @@ client slot 是云端授权命名空间，dataset UUID 是本地数据库数据�
 显式绑定；同一 Key 碰到另一个新 dataset 不能自动覆盖原数据或沿用旧 seq。
 不同机器上的同 UUID 来源会话也不能互相覆盖。
 
+实施后的客户端识别（详见 [server/README.md](../server/README.md#如何区分不同客户端)）：
+
+- **客户端** = 一把上传 API Key（`cloud_clients`，名称 + Key ID + 秘密哈希）。身份只来自
+  `Authorization` 头，请求体不能冒充。
+- **电脑** = 本地库随机生成的 `datasetId`，首次同步时与 Key 一对一绑定；换绑需 Owner 显式解绑。
+- **数据** 以 `<datasetId>/<source>:<id>` 命名，`cloud_sessions` 记录归属客户端；每个客户端独立的
+  `ack_seq` 承载上传进度，轮换 Key 不丢进度。
+
 云端控制台只展示数据、客户端标识、最后上传、Key、进度/回执。**不再有远程任务
 队列、Enqueue/Pause/Run 指令、worker lease、heartbeat 或在线监控页面。**
 

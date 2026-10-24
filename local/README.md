@@ -79,6 +79,10 @@ Start-Process -WindowStyle Hidden -FilePath python -ArgumentList '-u','-m','loca
 - **导入游标**（`source_files` / `sync_checkpoints`）：哪些来源记录已安全写入本地库。
 - **上传序列**（`change_log` + `cloud_connection`）：哪些本地变更已被云端确认。
 
+本地库首次创建时会生成随机的数据集 ID（控制台 Local store 中可见）。首次同步时云端把它与
+所用 API Key 绑定，用来区分不同电脑；因此每台电脑要用自己的 Key。删除或重建本地库会得到
+新的数据集 ID，需要新 Key，或让云端 Owner 对旧 Key 执行“Allow a new computer”。
+
 本地每次提交在一个事务里写入消息、游标和不可变变更日志。上传按字节动态组批，
 批次范围/哈希/幂等键在发送前持久化，重试时从变更日志逐字节重建。
 

@@ -11,6 +11,7 @@ function render(state) {
     const local = state.local;
     $('localStats').replaceChildren(line('Sessions', local.sessions), line('Analytical messages', local.messages),
         line('Tracked source files', local.sourceFiles), line('Local change sequence', local.lastSeq),
+        line('Dataset ID (identifies this computer to the cloud)', local.datasetId),
         line('Database', local.database));
     const box = $('cloudConnection');
     if (!state.configured) {
