@@ -14,6 +14,10 @@ from .db import Database, encode
 from .contracts.protocol import Problem, decode, digest, require, SOURCES
 from .contracts.analysis import POLICY,content_digest
 
+TASK_POLL_SECONDS=60
+TAKEOVER_AFTER_SECONDS=300
+DELIVERY_SECONDS=180
+
 
 class AtomicDatabase(Database):
     def __init__(self,path):
@@ -63,7 +67,17 @@ class CloudArchive:
                     operation_key TEXT NOT NULL,state TEXT NOT NULL,desired TEXT NOT NULL,sources TEXT NOT NULL,
                     worker TEXT,lease_until REAL NOT NULL DEFAULT 0,created REAL NOT NULL,expires REAL NOT NULL,
                     progress TEXT NOT NULL DEFAULT '{}',result TEXT,UNIQUE(device,operation_key));
+                CREATE TABLE IF NOT EXISTS dist_job_queue(sequence INTEGER PRIMARY KEY AUTOINCREMENT,
+                    device TEXT NOT NULL,job_id TEXT NOT NULL UNIQUE REFERENCES dist_jobs(id) ON DELETE CASCADE);
+                CREATE INDEX IF NOT EXISTS dist_job_queue_device ON dist_job_queue(device,sequence);
             ''')
+            columns={r[1] for r in conn.execute('PRAGMA table_info(dist_jobs)')}
+            for name,definition in (('delivery_worker','TEXT'),('delivery_token','TEXT'),
+                                    ('delivery_until','REAL NOT NULL DEFAULT 0'),('received_at','REAL NOT NULL DEFAULT 0')):
+                if name not in columns:conn.execute(f'ALTER TABLE dist_jobs ADD COLUMN {name} {definition}')
+            # Additive upgrade: queued legacy jobs retain FIFO order; running
+            # jobs stay execution records and are never put back as new tasks.
+            conn.execute("INSERT OR IGNORE INTO dist_job_queue(device,job_id) SELECT device,id FROM dist_jobs WHERE state='QUEUED' ORDER BY created,id")
             conn.execute("INSERT OR IGNORE INTO dist_settings VALUES('content_policy',?)",(POLICY,))
             conn.execute("INSERT OR IGNORE INTO dist_settings VALUES('instance',?)",(secrets.token_hex(16),))
             self.instance=conn.execute("SELECT value FROM dist_settings WHERE key='instance'").fetchone()[0]
@@ -107,6 +121,23 @@ class CloudArchive:
         if expected is not None:require(revision==expected,'Archive revision changed','REVISION_CONFLICT',412)
         return revision
 
+    def snapshot(self,conn,sid,revision,path=None,scope_delta=None):
+        """Trusted committed state, without rescanning all message counts."""
+        row=conn.execute('SELECT * FROM sessions WHERE id=?',(sid,)).fetchone() if sid else None
+        state=conn.execute('SELECT * FROM source_files WHERE path=?',(path or (row['path'] if row else ''),)).fetchone()
+        checkpoint=conn.execute('SELECT path,parser_version,state FROM sync_checkpoints WHERE session_id=?',(sid,)).fetchone() if row else None
+        result={'instance':self.instance,'state':dict(state) if state else None,'revision':revision,
+                'context':{'session':self.db._session(row),'primary':dict(row)} if row else None,
+                'checkpoint':{'path':checkpoint[0],'parserVersion':checkpoint[1],'state':unpack_json(checkpoint[2])} if checkpoint else None}
+        if scope_delta is None:
+            result['scopes']={r[0]:unpack_json(r[1]) for r in conn.execute('SELECT scope,state FROM projection_state WHERE session_id=?',(sid,))} if row else {}
+        else:
+            result['scopesDelta']={scope:None for scope in scope_delta}
+            for scope in scope_delta:
+                saved=conn.execute('SELECT state FROM projection_state WHERE session_id=? AND scope=?',(sid,scope)).fetchone()
+                if saved:result['scopesDelta'][scope]=unpack_json(saved[0])
+        return result
+
     def context(self,device,path=None,sid=None,source=None):
         with self.db.transaction(write=False) as conn:
             self.device(conn,device)
@@ -114,19 +145,19 @@ class CloudArchive:
             if state:
                 require(state['source']==source,'Source identity changed','SOURCE_CHANGED');sid=state['session_id']
             revision=self.binding(conn,device,sid) if sid else 0
-            context=self.db.append_context(sid) if sid else None
-            scopes={r[0]:unpack_json(r[1]) for r in conn.execute('SELECT scope,state FROM projection_state WHERE session_id=?',(sid,))} if context else {}
-            return {'instance':self.instance,'state':dict(state) if state else None,'context':context,
-                    'checkpoint':self.db.get_sync_checkpoint(sid) if context else None,'revision':revision,'scopes':scopes}
+            return self.snapshot(conn,sid,revision,path)
 
-    def query_progress(self,device,files):
+    def query_progress(self,device,files,*,mark_seen=False,include_context=False):
         """One revision-consistent metadata query; no message/scope bodies."""
         require(isinstance(files,list) and 0<len(files)<=128,'Query 1..128 file descriptors',status=400)
         for item in files:
             require(isinstance(item,dict) and item.get('source') in SOURCES and
                     isinstance(item.get('path'),str) and 0<len(item['path'])<=8192,'Invalid file descriptor',status=400)
+        for item in files:
+            for key in ('modified','size','parserVersion'):
+                require(key not in item or isinstance(item[key],int) and not isinstance(item[key],bool) and item[key]>=0,'Invalid file metadata',status=400)
         paths=list({item['path'] for item in files});marks=','.join('?' for _ in paths)
-        with self.db.transaction(write=False) as conn:
+        with self.db.transaction(write=mark_seen) as conn:
             self.device(conn,device)
             states={r['path']:dict(r) for r in conn.execute(f'SELECT * FROM source_files WHERE path IN ({marks})',paths)}
             sids=list({r['session_id'] for r in states.values()})
@@ -136,7 +167,7 @@ class CloudArchive:
                 bindings={r['id']:dict(r) for r in conn.execute(f'SELECT * FROM dist_sessions WHERE id IN ({placeholders})',sids)}
                 metadata={r[0]:json.loads(r[1]) for r in conn.execute(f'SELECT id,metadata FROM sessions WHERE id IN ({placeholders})',sids)}
                 existing=set(metadata)
-                checkpoints={r[0]:unpack_json(r[1]).get('cursor') for r in conn.execute(f'SELECT session_id,state FROM sync_checkpoints WHERE session_id IN ({placeholders})',sids)}
+                checkpoints={r[0]:unpack_json(r[1]) for r in conn.execute(f'SELECT session_id,state FROM sync_checkpoints WHERE session_id IN ({placeholders})',sids)}
             result=[]
             for item in files:
                 state=states.get(item['path']);entry={'path':item['path'],'source':item['source'],'state':None,'revision':0,'checkpoint':None}
@@ -147,9 +178,17 @@ class CloudArchive:
                     elif binding and binding['device']!=device:code='REPLICA_CONFLICT'
                     elif not binding and state['session_id'] in existing:code='ADOPTION_REQUIRED'
                     else:
-                        cursor=checkpoints.get(state['session_id'])
+                        progress=checkpoints.get(state['session_id'],{});cursor=progress.get('cursor')
                         compact={k:cursor[k] for k in ('offset','nextLine') if k in cursor} if cursor else None
+                        if mark_seen:
+                            conn.execute('UPDATE source_files SET available=1 WHERE path=?',(state['path'],))
+                            conn.execute('UPDATE sessions SET available=1 WHERE id=? AND path=?',(state['session_id'],state['path']))
+                            state={**state,'available':1}
                         entry.update(state=state,revision=binding['revision'] if binding else 0,checkpoint=compact)
+                        changed=(item.get('modified',state['modified'])!=state['modified'] or
+                                 item.get('parserVersion',state['parser_version'])!=state['parser_version'] or
+                                 progress.get('snapshotBytes') is not None and item.get('size',progress['snapshotBytes'])!=progress['snapshotBytes'])
+                        if include_context and changed:entry['syncContext']=self.snapshot(conn,state['session_id'],entry['revision'],state['path'])
                 if code:entry['error']={'code':code,'message':'File progress is not available to this device/source','status':409}
                 result.append(entry)
             return {'instance':self.instance,'files':result}
@@ -174,7 +213,7 @@ class CloudArchive:
             file_owner=conn.execute('SELECT session_id FROM source_files WHERE path=?',(info['path'],)).fetchone()
             if file_owner:self.binding(conn,device,file_owner['session_id'])
             if value.get('jobId'):self.check_lease(conn,device,value['jobId'],value.get('workerId'))
-            old=self.db.append_context(sid);base=document.append_base
+            old=self.snapshot(conn,sid,revision,info['path'],scope_delta=set())['context'];base=document.append_base
             if base:
                 require(old is not None,'Increment requires an existing session','REVISION_CONFLICT',412)
                 require(old['primary']['path']==info['path'],'Source replica path changed','SOURCE_CHANGED')
@@ -230,8 +269,15 @@ class CloudArchive:
             saved=self.db.get_session(sid)
             receipt={'operationId':key,'sessionId':sid,'revision':revision+1,'instance':self.instance,
                      'messageCount':saved['messageCount'],'userMessageCount':saved['userMessageCount'],
-                     'changedScopes':len(document.changed_scopes),'fingerprint':info['fingerprint']}
-            # SAME transaction as raw/messages/search/checkpoint, not a later ACK.
+                     'changedScopes':len(document.changed_scopes),'fingerprint':info['fingerprint'],
+                     'nextContext':self.snapshot(conn,sid,revision+1,info['path'],scope_delta=touched)}
+            receipt['nextContext']['resetScopes']=not bool(base)
+            if value.get('jobId'):
+                progress={'source':document.source,'file':Path(info['path'].replace('\\','/')).name,
+                          'step':'batch committed','revision':revision+1,'messageCount':saved['messageCount']}
+                conn.execute('UPDATE dist_jobs SET progress=?,lease_until=? WHERE id=?',
+                    (encode(progress),time.time()+TAKEOVER_AFTER_SECONDS,value['jobId']))
+            # SAME transaction as messages/search/checkpoint, not a later ACK.
             conn.execute('INSERT INTO dist_receipts VALUES(?,?,?,?)',(device,key,payload_hash,encode(receipt)))
             return receipt
 
@@ -268,11 +314,16 @@ class CloudArchive:
                 AND EXISTS (SELECT 1 FROM source_files f WHERE f.session_id=sessions.id)''',(device,))
             return len(missing)
 
-    def heartbeat(self,device,info):
+    def connect(self,device,info):
+        """One startup registration, not a recurring heartbeat."""
         require(isinstance(info,dict),'Invalid device info')
         with self.db.transaction() as conn:
             self.device(conn,device)
             conn.execute('UPDATE dist_devices SET last_seen=?,info=? WHERE id=?',(time.time(),encode(info),device))
+
+    @staticmethod
+    def public_job(row):
+        return {k:row[k] for k in row.keys() if k not in ('delivery_token','delivery_worker','delivery_until')}
 
     def enqueue(self,device,key,sources):
         require(isinstance(key,str) and 0<len(key)<=160,'Invalid command key',status=400)
@@ -281,49 +332,103 @@ class CloudArchive:
             dev=self.device(conn,device);require(dev['control'],'Remote control not enabled','CONTROL_DISABLED',403)
             old=conn.execute('SELECT * FROM dist_jobs WHERE device=? AND operation_key=?',(device,key)).fetchone()
             if old:
-                require(json.loads(old['sources'])==sources,'Command key reused','IDEMPOTENCY_MISMATCH');return dict(old)
+                require(json.loads(old['sources'])==sources,'Command key reused','IDEMPOTENCY_MISMATCH');return self.public_job(old)
             self.expire_jobs(conn)
-            active=conn.execute("SELECT * FROM dist_jobs WHERE device=? AND state IN ('QUEUED','RUNNING','PAUSED')",(device,)).fetchone()
-            if active:return dict(active)
             jid=secrets.token_hex(16);now=time.time()
             conn.execute('INSERT INTO dist_jobs(id,device,operation_key,state,desired,sources,created,expires) VALUES(?,?,?,?,?,?,?,?)',
-                         (jid,device,key,'QUEUED','run',encode(sources),now,now+600))
-            return dict(conn.execute('SELECT * FROM dist_jobs WHERE id=?',(jid,)).fetchone())
+                         (jid,device,key,'QUEUED','run',encode(sources),now,0))
+            conn.execute('INSERT INTO dist_job_queue(device,job_id) VALUES(?,?)',(device,jid))
+            return self.public_job(conn.execute('SELECT * FROM dist_jobs WHERE id=?',(jid,)).fetchone())
 
-    def expire_jobs(self,conn):conn.execute("UPDATE dist_jobs SET state='EXPIRED' WHERE state='QUEUED' AND expires<?",(time.time(),))
+    def expire_jobs(self,conn):
+        # Pending FIFO entries do not expire because an earlier task ran for a
+        # long time. Only explicit cancellation or a received ACK dequeues them.
+        conn.execute("DELETE FROM dist_job_queue WHERE job_id IN (SELECT id FROM dist_jobs WHERE state IN ('EXPIRED','CANCELLED'))")
 
-    def claim(self,device,worker):
+    def offer(self,conn,job,worker,resume):
+        now=time.time()
+        if job['delivery_worker'] not in (None,worker) and job['delivery_until']>now:return None
+        token=job['delivery_token'] if job['delivery_worker']==worker and job['delivery_token'] else secrets.token_urlsafe(32)
+        conn.execute('UPDATE dist_jobs SET delivery_worker=?,delivery_token=?,delivery_until=? WHERE id=?',
+                     (worker,token,now+DELIVERY_SECONDS,job['id']))
+        return {'job':self.public_job(job),'deliveryToken':token,'resume':resume}
+
+    def next_job(self,device,worker):
+        """GET reserves delivery but NEVER dequeues it or starts execution."""
         require(isinstance(worker,str) and 0<len(worker)<=128,'Invalid worker')
         with self.db.transaction() as conn:
-            self.device(conn,device);self.expire_jobs(conn)
-            job=conn.execute("SELECT * FROM dist_jobs WHERE device=? AND state IN ('QUEUED','RUNNING','PAUSED') ORDER BY created LIMIT 1",(device,)).fetchone()
-            if not job:return None
-            require(job['worker'] in (None,worker) or job['lease_until']<time.time(),'Another worker owns this task','WORKER_BUSY')
-            state='PAUSED' if job['desired']=='pause' else 'RUNNING'
-            conn.execute('UPDATE dist_jobs SET worker=?,lease_until=?,state=? WHERE id=?',(worker,time.time()+45,state,job['id']))
-            return dict(conn.execute('SELECT * FROM dist_jobs WHERE id=?',(job['id'],)).fetchone())
+            dev=self.device(conn,device);require(dev['control'],'Remote control disabled','CONTROL_DISABLED',403)
+            conn.execute('UPDATE dist_devices SET last_seen=? WHERE id=?',(time.time(),device));self.expire_jobs(conn)
+            active=conn.execute("SELECT * FROM dist_jobs WHERE device=? AND state IN ('RUNNING','PAUSED') ORDER BY created,id LIMIT 1",(device,)).fetchone()
+            if active:
+                # Resume the SAME unfinished job, never deliver the next FIFO
+                # entry. No heartbeat means silence alone doesn't revoke a worker.
+                if active['worker']!=worker and active['lease_until']>=time.time():return None
+                return self.offer(conn,active,worker,True)
+            queued=conn.execute("SELECT j.* FROM dist_job_queue q JOIN dist_jobs j ON j.id=q.job_id WHERE q.device=? AND j.state='QUEUED' ORDER BY q.sequence LIMIT 1",(device,)).fetchone()
+            return self.offer(conn,queued,worker,False) if queued else None
 
-    def check_lease(self,conn,device,jid,worker,*,allow_expired=False):
+    def received(self,device,jid,worker,token):
+        """Idempotent receipt ACK: dequeue + assign execution atomically."""
+        require(isinstance(worker,str) and 0<len(worker)<=128 and isinstance(token,str),'Invalid receipt ACK')
+        with self.db.transaction() as conn:
+            self.device(conn,device);self.expire_jobs(conn)
+            job=conn.execute('SELECT * FROM dist_jobs WHERE id=? AND device=?',(jid,device)).fetchone()
+            require(job is not None,'Unknown job','NOT_FOUND',404)
+            require(job['delivery_worker']==worker and hmac.compare_digest(job['delivery_token'] or '',token),'Delivery was replaced or token is invalid','DELIVERY_MISMATCH')
+            same_ack=job['worker']==worker and job['received_at']>0
+            if job['state'] not in ('QUEUED','RUNNING','PAUSED'):
+                require(same_ack,'Task is no longer pending','JOB_FINISHED')
+                return {'job':self.public_job(job),'terminal':True,'control':{'desired':'cancel','state':job['state']}}
+            if job['state']=='QUEUED':
+                require(conn.execute('SELECT 1 FROM dist_job_queue WHERE job_id=?',(jid,)).fetchone() is not None,'Task is not queued','JOB_FINISHED')
+                require(not conn.execute("SELECT 1 FROM dist_jobs WHERE device=? AND id<>? AND state IN ('RUNNING','PAUSED')",(device,jid)).fetchone(),'Finish the current task first','TASK_IN_PROGRESS')
+            elif job['worker']!=worker:
+                require(job['lease_until']<time.time(),'Current worker contacted the server again','WORKER_BUSY')
+            state='PAUSED' if job['desired']=='pause' else 'RUNNING'
+            conn.execute('UPDATE dist_jobs SET worker=?,state=?,lease_until=?,delivery_until=0,received_at=CASE WHEN received_at>0 THEN received_at ELSE ? END WHERE id=?',
+                         (worker,state,time.time()+TAKEOVER_AFTER_SECONDS,time.time(),jid))
+            conn.execute('DELETE FROM dist_job_queue WHERE device=? AND job_id=?',(device,jid))
+            conn.execute('UPDATE dist_devices SET last_seen=? WHERE id=?',(time.time(),device))
+            saved=conn.execute('SELECT * FROM dist_jobs WHERE id=?',(jid,)).fetchone()
+            return {'job':self.public_job(saved),'terminal':False,'control':{'desired':saved['desired'],'state':state}}
+
+    def check_lease(self,conn,device,jid,worker):
         job=conn.execute('SELECT * FROM dist_jobs WHERE id=? AND device=?',(jid,device)).fetchone()
         require(job is not None,'Unknown job','NOT_FOUND',404)
-        require(job['state'] in ('RUNNING','PAUSED') and job['worker']==worker and (allow_expired or job['lease_until']>=time.time()),'Worker lease expired/replaced','LEASE_LOST')
+        # No heartbeat/clock-expiry requirement. A long parse is permitted while
+        # the acknowledged worker is still the assigned owner; takeover fences it.
+        require(job['state'] in ('RUNNING','PAUSED') and job['worker']==worker,'Worker was not acknowledged or was replaced','LEASE_LOST')
         return job
 
-    def pulse(self,device,jid,worker,progress,result=None):
+    def contact(self,device,jid=None,worker=None):
+        """Piggyback control/last-contact on real requests, never a heartbeat."""
+        with self.db.transaction() as conn:
+            self.device(conn,device);conn.execute('UPDATE dist_devices SET last_seen=? WHERE id=?',(time.time(),device))
+            if not jid:return None
+            job=conn.execute('SELECT * FROM dist_jobs WHERE id=? AND device=?',(jid,device)).fetchone()
+            if not job or job['worker']!=worker or job['state'] not in ('RUNNING','PAUSED'):
+                return {'desired':'cancel','state':'FENCED'}
+            state='PAUSED' if job['desired']=='pause' else 'RUNNING'
+            conn.execute('UPDATE dist_jobs SET lease_until=?,state=? WHERE id=?',(time.time()+TAKEOVER_AFTER_SECONDS,state,jid))
+            return {'desired':job['desired'],'state':state}
+
+    def commands(self,device,jid,worker):
+        with self.db.transaction(write=False) as conn:self.check_lease(conn,device,jid,worker)
+        return {'control':self.contact(device,jid,worker)}
+
+    def finish(self,device,jid,worker,progress,result):
+        require(isinstance(progress,dict) and isinstance(result,dict),'Invalid task result')
         with self.db.transaction() as conn:
             self.device(conn,device)
             previous=conn.execute('SELECT * FROM dist_jobs WHERE id=? AND device=?',(jid,device)).fetchone()
-            if previous and previous['worker']==worker and previous['result'] is not None and result is not None:
+            if previous and previous['worker']==worker and previous['result'] is not None:
                 require(json.loads(previous['result'])==result,'Terminal result is immutable','IDEMPOTENCY_MISMATCH')
                 return {'desired':previous['desired'],'state':previous['state']}
-            job=self.check_lease(conn,device,jid,worker,allow_expired=True)
+            job=self.check_lease(conn,device,jid,worker)
+            state='CANCELLED' if job['desired']=='cancel' else 'FAILED' if result.get('failed') else 'SUCCEEDED'
             conn.execute('UPDATE dist_devices SET last_seen=? WHERE id=?',(time.time(),device))
-            require(isinstance(progress,dict),'Invalid progress');state='PAUSED' if job['desired']=='pause' else 'RUNNING'
-            if result is not None:
-                require(isinstance(result,dict),'Invalid result')
-                state='CANCELLED' if job['desired']=='cancel' else 'FAILED' if result.get('failed') else 'SUCCEEDED'
-            conn.execute('UPDATE dist_jobs SET progress=?,result=?,lease_until=?,state=? WHERE id=?',
-                         (encode(progress),encode(result) if result is not None else None,time.time()+45,state,jid))
+            conn.execute('UPDATE dist_jobs SET progress=?,result=?,state=? WHERE id=?',(encode(progress),encode(result),state,jid))
             return {'desired':job['desired'],'state':state}
 
     def control(self,device,jid,action):
@@ -335,12 +440,17 @@ class CloudArchive:
             require(job['state'] in ('QUEUED','RUNNING','PAUSED'),'Job is terminal','JOB_FINISHED')
             state='CANCELLED' if action=='cancel' and job['state']=='QUEUED' else job['state']
             conn.execute('UPDATE dist_jobs SET desired=?,state=? WHERE id=?',(action,state,jid))
+            if state=='CANCELLED':conn.execute('DELETE FROM dist_job_queue WHERE device=? AND job_id=?',(device,jid))
 
     def dashboard(self):
         with self.db.transaction() as conn:
             self.expire_jobs(conn)
             devices=[dict(r) for r in conn.execute('SELECT id,name,active,control,last_seen,info,expires FROM dist_devices ORDER BY name')]
             for dev in devices:
-                dev['info']=json.loads(dev['info']);dev['online']=time.time()-dev['last_seen']<30
-                dev['job']=next((dict(r) for r in conn.execute('SELECT * FROM dist_jobs WHERE device=? ORDER BY created DESC LIMIT 1',(dev['id'],))),None)
+                dev['info']=json.loads(dev['info']);dev['online']=time.time()-dev['last_seen']<3*TASK_POLL_SECONDS
+                active=conn.execute("SELECT * FROM dist_jobs WHERE device=? AND state IN ('RUNNING','PAUSED') ORDER BY created,id LIMIT 1",(dev['id'],)).fetchone()
+                latest=active or conn.execute('SELECT * FROM dist_jobs WHERE device=? ORDER BY created DESC,id DESC LIMIT 1',(dev['id'],)).fetchone()
+                dev['job']=self.public_job(latest) if latest else None
+                dev['queue']=[self.public_job(r) for r in conn.execute('SELECT j.* FROM dist_job_queue q JOIN dist_jobs j ON j.id=q.job_id WHERE q.device=? ORDER BY q.sequence',(dev['id'],))]
+                dev['queueCount']=len(dev['queue'])
             return devices

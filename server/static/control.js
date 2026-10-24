@@ -17,7 +17,7 @@ async function refresh() {
     try {
         const list = await api('/api/devices'); devices.replaceChildren();
         for (const device of list) {
-            const row = node('div', `${device.name} · ${!device.active ? 'revoked' : device.online ? 'online' : 'offline'} · ${device.id}`);
+            const row = node('div', `${device.name} · ${!device.active ? 'revoked' : device.online ? 'recent contact' : 'no recent contact'} · ${device.id}`);
             const button = (label, path, body = {}, allowRevoked = false) => {
                 const el = node('button', label); el.disabled = !device.active && !allowRevoked;
                 el.addEventListener('click', async () => {
@@ -27,11 +27,16 @@ async function refresh() {
                 }); row.append(el);
             };
             if (device.active && device.control) {
-                button('Sync now (expires in 10 min)', `/api/devices/${device.id}/jobs`, { sources: [] });
+                button('Enqueue sync', `/api/devices/${device.id}/jobs`, { sources: [] });
                 if (device.job && ['QUEUED', 'RUNNING', 'PAUSED'].includes(device.job.state)) {
                     for (const [label, action] of [['Pause', 'pause'], ['Resume', 'run'], ['Cancel after current file', 'cancel']])
                         button(label, `/api/devices/${device.id}/jobs/${device.job.id}/${action}`);
                 }
+            }
+            row.append(node('div', `Pending queue: ${device.queueCount ?? 0}`));
+            for (const task of device.queue || []) {
+                row.append(node('div', `Queued ${task.id.slice(0, 8)} · ${JSON.parse(task.sources).join(', ') || 'all approved sources'} · awaiting receipt ACK`));
+                button(`Cancel queued ${task.id.slice(0, 8)}`, `/api/devices/${device.id}/jobs/${task.id}/cancel`);
             }
             if (device.job) {
                 const status = node('pre', JSON.stringify({ state: device.job.state, desired: device.job.desired,

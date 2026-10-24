@@ -6,7 +6,7 @@ from .models import SessionDocument
 from .session_policy import is_subagent as _is_subagent
 from .analysis import POLICY,project,no_attachments,status_name,metadata,MESSAGE_KEYS
 
-VERSION=4
+VERSION=5
 SOURCES={'claude':'Claude Code','pi':'pi','codex':'Codex','copilot_cli':'Copilot CLI','vscode_chat':'VS Code Chat'}
 ENCODER=json.JSONEncoder(ensure_ascii=False,separators=(',',':'),allow_nan=False)
 DOC_KEYS={'source','external_id','project','name','messages','metadata','append_base','sync_state','message_scopes','message_order'}

@@ -38,9 +38,11 @@ class CloudStub:
             self.sessions[doc.id]={'session':{'id':doc.id,'source':doc.source,'externalId':doc.external_id,'project':doc.project,
                     'name':doc.name,'metadata':doc.metadata,'messageCount':len(doc.messages)},
                     'primary':{'path':info['path'],'fingerprint':info['fingerprint'],'parser_version':info['parserVersion'],'message_count':len(doc.messages)}}
-            return {'instance':'unit','revision':1,'fingerprint':info['fingerprint']}
-        if path in ('/sync/v1/scan/finish','/sync/v1/presence','/sync/v1/heartbeat'):return {'ok':True}
-        if path=='/sync/v1/jobs/claim':return {'job':None}
+            next_context={'instance':'unit','revision':1,'state':state,'context':self.sessions[doc.id],
+                          'checkpoint':{'path':info['path'],'parserVersion':info['parserVersion'],'state':doc.sync_state},'scopesDelta':{}}
+            return {'instance':'unit','revision':1,'fingerprint':info['fingerprint'],'nextContext':next_context}
+        if path in ('/sync/v1/scan/finish','/sync/v1/connect'):return {'ok':True}
+        if path=='/sync/v1/jobs/next':return {'delivery':None}
         raise AssertionError(path)
 
 
@@ -69,7 +71,7 @@ class DeamonUnitTests(unittest.TestCase):
         result=SyncCoordinator(self.repo,[adapter],quiet_seconds=0,progress_query_files=2).run()
         self.assertEqual(result['initialized'],5)
         self.assertEqual([len(q) for q in self.peer.queries],[2,2,1])
-        self.assertTrue(all(set(f)=={'path','source'} for q in self.peer.queries for f in q))
+        self.assertTrue(all(set(f)=={'path','source','modified','size','parserVersion'} for q in self.peer.queries for f in q))
         self.assertTrue(all('records' not in b['document'] for b in self.peer.batches))
 
     def test_recent_file_never_reads_header_or_body(self):
@@ -111,6 +113,41 @@ class DeamonUnitTests(unittest.TestCase):
             with self.assertRaises(ValueError):SyncCoordinator(self.repo,[],**args)
         for url in ('http://public.test','https://key:secret@unit.test','https://unit.test/path'):
             with self.assertRaises(ValueError):Remote(url,'token')
+
+    def test_http_connection_session_is_reused_and_closed(self):
+        from unittest.mock import MagicMock
+        http=MagicMock();response=MagicMock();response.status_code=200;response.ok=True;response.json.return_value={'ok':True}
+        http.request.return_value=response
+        with patch('deamon.syncer.requests.Session',return_value=http) as factory:
+            remote=Remote('https://unit.test','token')
+            remote.call('GET','/one');remote.call('GET','/two');remote.close()
+        factory.assert_called_once();self.assertEqual(http.request.call_count,2)
+        self.assertFalse(http.trust_env);self.assertEqual(response.close.call_count,2);http.close.assert_called_once()
+
+    def test_paused_task_checks_only_its_commands_once_per_minute(self):
+        clock={'now':60};responses=iter(['pause','run']);original=self.peer.call
+        def cloud(method,path,**kw):
+            if path=='/sync/v1/jobs/job/commands':
+                self.peer.calls.append((method,path));return {'control':{'desired':next(responses),'state':'PAUSED'}}
+            return original(method,path,**kw)
+        self.repo.job='job';self.repo.worker='worker';self.repo.desired='pause';self.repo.last_control=0
+        coordinator=SyncCoordinator(self.repo,[],quiet_seconds=0)
+        def sleep(seconds):self.assertEqual(seconds,60);clock['now']+=seconds
+        with patch.object(self.peer,'call',side_effect=cloud),patch('deamon.syncer.time.monotonic',side_effect=lambda:clock['now']),patch('deamon.syncer.time.sleep',side_effect=sleep):
+            coordinator.control_point()
+        commands=[p for _,p in self.peer.calls if '/commands' in p]
+        self.assertEqual(len(commands),2)
+        self.assertFalse(any('/jobs/next' in p or 'heartbeat' in p for _,p in self.peer.calls))
+
+    def test_five_second_working_log_sends_no_network_requests(self):
+        class Stop:
+            count=0
+            def wait(self,seconds):self.count+=1;return self.count>1
+            def set(self):pass
+        coordinator=SyncCoordinator(self.repo,[],quiet_seconds=0);before=len(self.peer.calls)
+        with patch('deamon.syncer.Event',Stop):
+            with coordinator.working_log():pass
+        self.assertEqual(len(self.peer.calls),before)
 
     def test_client_import_has_no_server_runtime_dependencies(self):
         code="import deamon.syncer,sys; assert 'sqlite3' not in sys.modules; assert 'flask' not in sys.modules; assert 'server.app' not in sys.modules"

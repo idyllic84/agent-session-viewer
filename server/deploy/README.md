@@ -64,7 +64,9 @@ python -m deamon --cloud http://localhost:41880 --allow-http-loopback \
   --token-file /private/laptop.token --roots-file /private/roots.json
 ```
 
-默认等待网页任务，不自动扫描；Server 保存所有进度，Deamon 没有本地进度库。
+默认每分钟 GET 网页任务，不发送 heartbeat、不自动扫描；GET 不出队，Deamon
+POST 收到确认后服务端才出队；完成当前任务后才能领取下一项。Server 保存全部
+进度/队列/执行记录，Deamon 没有本地进度库。
 上传是四类分析消息（用户、主 Agent 正文、调用、结果状态），无 thinking/系统
 事件/附件/原始记录，不做敏感信息脱敏。
 

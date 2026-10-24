@@ -5,7 +5,7 @@ import json
 from pathlib import Path
 import random
 import secrets
-from threading import Event,Thread,Lock
+from threading import Event,Thread,Lock,local as thread_local
 import time
 from urllib.parse import urlsplit
 
@@ -29,24 +29,38 @@ class Remote:
             raise ValueError('Use a cloud origin without credentials, path, query or fragment')
         if not token or any(c.isspace() for c in token):raise ValueError('Invalid device credential')
         self.url=url.rstrip('/');self.token=token
+        self._thread=thread_local();self._sessions=[];self._sessions_lock=Lock()
+
+    def session(self):
+        if not hasattr(self._thread,'http'):
+            http=requests.Session();http.trust_env=False;self._thread.http=http
+            with self._sessions_lock:self._sessions.append(http)
+        return self._thread.http
+
+    def close(self):
+        with self._sessions_lock:
+            sessions,self._sessions=self._sessions,[]
+        for http in sessions:http.close()
 
     def call(self,method,path,**kwargs):
         headers={'Authorization':'Bearer '+self.token,**kwargs.pop('headers',{})};deadline=time.monotonic()+120
         for attempt in range(5):
             try:
                 left=max(1,deadline-time.monotonic())
-                with requests.Session() as http:
-                    http.trust_env=False
-                    response=http.request(method,self.url+path,headers=headers,timeout=(min(10,left),min(90,left)),allow_redirects=False,**kwargs)
-                if 300<=response.status_code<400:raise Problem('REDIRECT_REFUSED','Cloud redirect refused',403)
-                try:value=response.json()
-                except ValueError:raise Problem('INVALID_RESPONSE','Cloud returned non-JSON response',502)
-                if response.ok:return value
-                error=value.get('error',{});code=error.get('code','HTTP_ERROR') if isinstance(error,dict) else 'HTTP_ERROR'
-                if response.status_code not in (429,500,502,503,504) or attempt==4 or time.monotonic()>=deadline:
-                    raise Problem(code,error.get('message','Cloud request failed') if isinstance(error,dict) else 'Cloud request failed',response.status_code)
-                try:delay=max(0,float(response.headers.get('Retry-After',0)))
-                except ValueError:delay=0
+                response=self.session().request(method,self.url+path,headers=headers,timeout=(min(10,left),min(90,left)),allow_redirects=False,**kwargs)
+                try:
+                    if 300<=response.status_code<400:raise Problem('REDIRECT_REFUSED','Cloud redirect refused',403)
+                    try:value=response.json()
+                    except ValueError:raise Problem('INVALID_RESPONSE','Cloud returned non-JSON response',502)
+                    if response.ok:return value
+                    error=value.get('error',{});code=error.get('code','HTTP_ERROR') if isinstance(error,dict) else 'HTTP_ERROR'
+                    if response.status_code not in (429,500,502,503,504) or attempt==4 or time.monotonic()>=deadline:
+                        raise Problem(code,error.get('message','Cloud request failed') if isinstance(error,dict) else 'Cloud request failed',response.status_code)
+                    try:delay=max(0,float(response.headers.get('Retry-After',0)))
+                    except ValueError:delay=0
+                finally:
+                    close=getattr(response,'close',None)
+                    if close:close()
             except (requests.ConnectionError,requests.Timeout) as exc:
                 if attempt==4 or time.monotonic()>=deadline:raise Problem('NETWORK_UNAVAILABLE','Cloud unavailable; next task must re-query cloud progress',503) from exc
                 delay=0
@@ -60,7 +74,7 @@ class HttpArchiveRepository:
     def __init__(self,remote):
         self.remote=remote;self.caps=remote.call('GET','/sync/v1/capabilities')
         if self.caps.get('version')!=VERSION:raise Problem('PROTOCOL_VERSION','Unsupported cloud protocol',426)
-        self.job=None;self.worker=None;self.reset_run()
+        self.job=None;self.worker=None;self.desired='run';self.last_control=time.monotonic();self.reset_run()
 
     def reset_run(self):
         self.revision=0;self.progress_window={};self.primary=None
@@ -69,9 +83,17 @@ class HttpArchiveRepository:
     def check_instance(self,value):
         if value['instance']!=self.caps['instance']:raise Problem('ARCHIVE_RESTORED','Cloud archive instance changed; reconnect',409)
 
+    def call(self,method,path,**kwargs):
+        headers=kwargs.pop('headers',{})
+        if self.job:headers={**headers,'X-Sync-Job':self.job,'X-Sync-Worker':self.worker}
+        value=self.remote.call(method,path,headers=headers,**kwargs)
+        if isinstance(value,dict) and value.get('control') is not None:
+            control=value['control'];self.desired=control['desired'];self.last_control=time.monotonic()
+        return value
+
     def query_progress(self,files):
         if not files:return
-        value=self.remote.call('POST','/sync/v1/progress/query',json={'files':files})
+        value=self.call('POST','/sync/v1/progress/query',json={'files':files,'markSeen':True,'includeContext':True})
         self.check_instance(value)
         # Only the current bounded discovery window is held in RAM, never disk.
         require_keys=[(f['source'],f['path']) for f in files]
@@ -87,11 +109,19 @@ class HttpArchiveRepository:
             error=value['error'];raise Problem(error['code'],error['message'],error['status'])
         return value
 
-    def context(self,path=None,sid=None,source=None):
-        value=self.remote.call('POST','/sync/v1/context',json={'path':path,'sessionId':sid,'source':source})
-        self.check_instance(value);self.revision=value['revision'];self.current=value
-        self.primary=(value['context'] or {}).get('primary')
+    def use_context(self,value):
+        self.check_instance(value)
+        if 'scopesDelta' in value:
+            scopes={} if value.get('resetScopes') else dict(self.current.get('scopes',{}))
+            for scope,state in value['scopesDelta'].items():
+                if state is None:scopes.pop(scope,None)
+                else:scopes[scope]=state
+            value={**value,'scopes':scopes};value.pop('scopesDelta',None)
+        self.revision=value['revision'];self.current=value;self.primary=(value['context'] or {}).get('primary')
         return value
+
+    def context(self,path=None,sid=None,source=None):
+        return self.use_context(self.call('POST','/sync/v1/context',json={'path':path,'sessionId':sid,'source':source}))
 
     def load_scope_state(self,sid,scope):return self.replay.load_scope_state(sid,scope)
     def load_scope_records(self,sid,scope):return self.replay.load_scope_records(sid,scope)
@@ -126,12 +156,22 @@ class HttpArchiveRepository:
         identity={'instance':self.caps['instance'],'device':self.caps['deviceId'],
                   'revision':self.revision,'batch':json.loads(body)}
         key=digest(identity)
-        receipt=self.remote.call('POST','/sync/v1/batches',data=body,headers={
-            'Content-Type':'application/json','Idempotency-Key':key,'If-Match':f'"{self.revision}"'})
+        try:
+            receipt=self.call('POST','/sync/v1/batches',data=body,headers={
+                'Content-Type':'application/json','Idempotency-Key':key,'If-Match':f'"{self.revision}"'})
+        except Problem as exc:
+            if exc.code=='REVISION_CONFLICT':
+                # New physical path referring to an existing logical session:
+                # resolve only on conflict, not for every normal initial upload.
+                context=self.context(sid=document.id)
+                self.progress_window[(document.source,info['path'])]={'state':context['state'],'syncContext':context}
+            raise
         self.check_instance(receipt)
         self.replay.advance(document,info)
-        # Force a fresh authoritative context for the next batch in this file.
-        self.progress_window[(document.source,info['path'])]={'refresh':True,'state':None}
+        context=self.use_context(receipt['nextContext'])
+        # This is the CLOUD'S committed ACK, held only in RAM. No extra context
+        # round trip, independent local cursor or persistent progress is created.
+        self.progress_window[(document.source,info['path'])]={'state':context['state'],'syncContext':context}
         return receipt
 
     def release_file(self):
@@ -149,29 +189,32 @@ class SyncCoordinator:
         if not isinstance(progress_query_files,int) or isinstance(progress_query_files,bool) or progress_query_files<1:raise ValueError('Invalid progress query window')
         self.repository=repository;self.adapters=adapters;self.quiet_seconds=quiet_seconds
         self.query_files=min(progress_query_files,repository.caps['maxProgressFiles'])
-        self.batch_bytes=min(batch_bytes,repository.caps['maxRequestBytes']);self.progress={};self.desired='run';self.progress_lock=Lock();self.control_error=None
+        self.batch_bytes=min(batch_bytes,repository.caps['maxRequestBytes']);self.progress={};self.desired='run';self.progress_lock=Lock()
 
     def recent(self,entry):
         return self.quiet_seconds>0 and time.time_ns()-max(p.stat().st_mtime_ns for p in (entry.path,*entry.dependencies))<self.quiet_seconds*1e9
 
     def control_point(self):
         while True:
-            if self.control_error:raise self.control_error
+            repo=self.repository
+            if repo.job:
+                remaining=60-(time.monotonic()-repo.last_control)
+                if remaining<=0:repo.call('GET',f'/sync/v1/jobs/{repo.job}/commands')
+                self.desired=repo.desired
             if self.desired=='cancel':raise Cancelled()
             if self.desired!='pause':return
-            time.sleep(.25)
+            # Paused tasks poll only their own commands once per minute. They
+            # never GET a new task or send a heartbeat while waiting.
+            time.sleep(max(.1,60-(time.monotonic()-repo.last_control)))
 
     @contextmanager
-    def heartbeat(self):
+    def working_log(self):
         stop=Event()
-        def pulse():
+        def log_step():
             while not stop.wait(5):
                 with self.progress_lock:progress=dict(self.progress)
                 print('[syncer] working '+json.dumps(progress,ensure_ascii=False),flush=True)
-                if self.repository.job:
-                    try:self.desired=self.repository.remote.call('POST',f'/sync/v1/jobs/{self.repository.job}/pulse',json={'workerId':self.repository.worker,'progress':progress})['desired']
-                    except Problem as exc:self.control_error=exc
-        thread=Thread(target=pulse,daemon=True);thread.start()
+        thread=Thread(target=log_step,daemon=True);thread.start()
         try:yield
         finally:stop.set();thread.join()
 
@@ -179,12 +222,15 @@ class SyncCoordinator:
         """Batch only file descriptors. Bodies remain strictly sequential."""
         iterator=iter(adapter.discover());finished=False
         while not finished:
+            self.control_point()
             window=[];error=None
             try:
                 for _ in range(self.query_files):window.append(next(iterator))
             except StopIteration:finished=True
             except OSError as exc:error=exc;finished=True
-            files=[{'source':adapter.source,'path':str(e.path)} for e in window if not is_subagent(adapter.source,e.path)]
+            files=[{'source':adapter.source,'path':str(e.path),'modified':e.path.stat().st_mtime_ns//1_000_000,
+                    'size':e.path.stat().st_size,'parserVersion':adapter.parser_version}
+                   for e in window if not is_subagent(adapter.source,e.path)]
             if files:
                 self.control_point()
                 with self.progress_lock:self.progress={'source':adapter.source,'step':'batch-query-cloud-progress','files':len(files)}
@@ -196,8 +242,10 @@ class SyncCoordinator:
         repo=self.repository;path=str(entry.path);summary=repo.file_progress(path,adapter.source);state=summary['state']
         modified=entry.path.stat().st_mtime_ns//1_000_000
         if state and state['modified']==modified and state['parser_version']==adapter.parser_version and state['fingerprint']==entry.fingerprint():
-            repo.remote.call('POST','/sync/v1/presence',json={'path':path});return 'unchanged',False
-        if state or summary.get('refresh'):
+            return 'unchanged',False
+        if summary.get('syncContext') is not None:
+            value=repo.use_context(summary['syncContext'])
+        elif state or summary.get('refresh'):
             value=repo.context(path=path,source=adapter.source)
         else:
             value={'context':None,'checkpoint':None,'revision':0,'scopes':{}};repo.revision=0;repo.current=value;repo.primary=None
@@ -239,11 +287,10 @@ class SyncCoordinator:
                     else:high=count-1
                 if best:bounded,document,info,body=best
                 elif first_retained:_,bounded,document,info,body=first_retained
-        if context is None:repo.context(sid=document.id)
         def verify():
+            self.control_point()
             if bounded.snapshot_fingerprint(document.records)!=info['fingerprint']:raise Problem('SOURCE_CHANGED','Source snapshot changed before batch submission')
             if self.recent(entry):raise Problem('SOURCE_RECENT','Source changed within the quiet period')
-            if self.control_error:raise self.control_error
         receipt=repo.send(document,info,body,verify)
         with self.progress_lock:self.progress.update(batchBytes=len(body),revision=receipt['revision'])
         more=document.records.byte_count<entry.path.stat().st_size and bounds is not None
@@ -254,7 +301,8 @@ class SyncCoordinator:
         result={key:0 for key in ('initialized','incremental','unchanged','skippedRecent','skippedSubagents','skippedEmpty','failed')}
         result['errors']=[];seen=[];completed=[]
         try:
-            with self.heartbeat():
+            with self.working_log():
+                self.control_point()
                 for adapter in self.adapters:
                     if sources and adapter.source not in sources:continue
                     complete=bool(adapter.roots) and all(p.exists() for p in adapter.roots)
@@ -266,7 +314,7 @@ class SyncCoordinator:
                             try:
                                 if is_subagent(adapter.source,entry.path):outcome='skippedSubagents';result[outcome]+=1
                                 elif self.recent(entry):
-                                    self.repository.remote.call('POST','/sync/v1/presence',json={'path':path});outcome='skippedRecent';result[outcome]+=1
+                                    outcome='skippedRecent';result[outcome]+=1
                                 elif header_is_subagent(adapter.source,entry.path):outcome='skippedSubagents';result[outcome]+=1
                                 else:
                                     more=True
@@ -277,7 +325,9 @@ class SyncCoordinator:
                                             try:outcome,more=self.file(adapter,entry);break
                                             except Problem as exc:
                                                 if exc.code=='REVISION_CONFLICT' and attempt<2:
-                                                    self.repository.progress_window[(adapter.source,path)]={'refresh':True,'state':None};continue
+                                                    if not self.repository.progress_window.get((adapter.source,path),{}).get('syncContext'):
+                                                        self.repository.progress_window[(adapter.source,path)]={'refresh':True,'state':None}
+                                                    continue
                                                 raise
                                         result[outcome]+=1
                             except Problem as exc:
@@ -294,7 +344,7 @@ class SyncCoordinator:
                     except OSError:
                         complete=False;result['failed']+=1;result['errors'].append({'source':adapter.source,'code':'DISCOVERY_FAILED'})
                     if complete:completed.append(adapter.source)
-                self.repository.remote.call('POST','/sync/v1/scan/finish',json={'sources':completed,'seen':seen})
+                self.repository.call('POST','/sync/v1/scan/finish',json={'sources':completed,'seen':seen})
         except Cancelled:result['cancelled']=True
         finally:self.repository.reset_run()
         return result
@@ -321,20 +371,33 @@ def main():
     if not repo.caps['remoteControl']:raise SystemExit('Enable remote sync control for this device in the cloud before starting its daemon')
     info={'sources':[{'source':a.source,'roots':[str(p) for p in a.roots]} for a in adapters],'remoteControl':True,'stateless':True}
     worker=secrets.token_hex(16)
-    while True:
-        try:
-            remote.call('POST','/sync/v1/heartbeat',json=info);job=remote.call('POST','/sync/v1/jobs/claim',json={'workerId':worker})['job']
-            if job:
-                repo.job=job['id'];repo.worker=worker
-                sync=SyncCoordinator(repo,adapters,quiet_seconds=args.quiet_seconds,batch_bytes=args.batch_bytes,progress_query_files=args.progress_query_files);sync.desired=job['desired']
-                try:result=sync.run(json.loads(job['sources']))
-                except Problem as exc:result={'failed':1,'errors':[{'code':exc.code}]}
-                remote.call('POST',f'/sync/v1/jobs/{job["id"]}/pulse',json={'workerId':worker,'progress':sync.progress,'result':result})
-                repo.job=None;repo.worker=None
-        except Problem as exc:
-            print(f'[syncer] cloud error: {exc.code}',flush=True)
-            if exc.status in (401,403):raise SystemExit('Device credential expired/revoked; rotate or reauthorize it')
-        time.sleep(3)
+    try:
+        remote.call('POST','/sync/v1/connect',json=info)  # once per process, no heartbeat
+        while True:
+            try:
+                delivery=remote.call('GET','/sync/v1/jobs/next',params={'workerId':worker})['delivery']
+                if delivery and delivery.get('job'):
+                    offered=delivery['job']
+                    ack=remote.call('POST',f'/sync/v1/jobs/{offered["id"]}/received',
+                        json={'workerId':worker,'deliveryToken':delivery['deliveryToken']})
+                    if not ack['terminal']:
+                        job=ack['job'];repo.job=job['id'];repo.worker=worker
+                        repo.desired=ack['control']['desired'];repo.last_control=time.monotonic()
+                        sync=SyncCoordinator(repo,adapters,quiet_seconds=args.quiet_seconds,batch_bytes=args.batch_bytes,progress_query_files=args.progress_query_files)
+                        try:
+                            try:result=sync.run(json.loads(job['sources']))
+                            except Problem as exc:result={'failed':1,'errors':[{'code':exc.code}]}
+                            remote.call('POST',f'/sync/v1/jobs/{job["id"]}/finish',json={'workerId':worker,'progress':sync.progress,'result':result})
+                        finally:repo.job=None;repo.worker=None
+                # Never fetch/prefetch another task while the current task is
+                # executing or paused. Empty/finished polls wait a full minute.
+            except Problem as exc:
+                print(f'[syncer] cloud error: {exc.code}',flush=True)
+                if exc.status in (401,403):raise SystemExit('Device credential expired/revoked; rotate or reauthorize it')
+            time.sleep(60)
+    finally:
+        close=getattr(remote,'close',None)
+        if close:close()
 
 
 if __name__=='__main__':main()

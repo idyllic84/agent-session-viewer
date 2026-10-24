@@ -37,7 +37,7 @@ python -m server --database server/state/cloud.db \
 
 ## 内容及存储契约
 
-协议 v4，内容策略 `analysis-v1`，仅保存：
+协议 v5，内容策略 `analysis-v1`，仅保存：
 
 1. 用户消息正文。
 2. 主 Agent 回答正文。
@@ -72,7 +72,24 @@ Session metadata 可以保存；不做敏感信息脱敏。Thinking、系统事�
 | `POST /sync/v1/context` | 当前文件的权威上下文/分析 scope digest |
 | `POST /sync/v1/batches` | 普通 JSON 分析批次的原子提交 |
 | `GET /sync/v1/receipts/<key>` | 查询已提交回执 |
-| `/sync/v1/jobs/claim`, `/sync/v1/jobs/<id>/pulse` | 领取/续租/上报任务 |
+| `POST /sync/v1/connect` | 进程启动注册一次，不是周期 heartbeat |
+| `GET /sync/v1/jobs/next` | 设备 FIFO 的下一投递或恢复当前任务；不出队 |
+| `POST /sync/v1/jobs/<id>/received` | 收到确认：原子出队并指派执行，幂等 |
+| `GET /sync/v1/jobs/<id>/commands` | 无业务响应/暂停时每分钟查询当前任务控制 |
+| `POST /sync/v1/jobs/<id>/finish` | 完成报告，幂等，保留历史记录 |
+
+每设备独立 FIFO。页面创建任务入队，GET 只做短暂投递预留，收到确认后才删
+`dist_job_queue` 的队列项；`dist_jobs` 保留执行状态、收到时间和完成结果。只有
+当前任务终态后才投递下一项。GET/ACK 丢回包可重试；daemon 重启优先恢复当前
+未完成任务，不能越过它消费下一任务。新排队任务不自动过期。
+
+没有 heartbeat 接口。每分钟的任务 GET 登记最近联系；正常业务响应附带控制
+指令并刷新接管保护期。长解析不会仅因时间过去而失去原 assignment；仅真正
+确认接管的另一个 worker 会 fence 旧 worker。网页的最近联系不是在线证明。
+
+批量进度查询也可批量登记存在性，并只为元数据已变化的文件返回完整上下文。
+提交回执携带下批上下文与受影响 scope 的 digest delta，避免逐批 context 往返。
+客户端 HTTP Session 复用；没有未变化文件的逐项 presence 请求。
 
 `Idempotency-Key` + `If-Match` 保护重试与并发；数据、搜索、计数、检查点和成功
 回执同一事务提交。没有 create-upload/chunk/seal 协议，断线后客户端重新查询

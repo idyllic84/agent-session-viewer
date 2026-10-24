@@ -14,7 +14,7 @@ from urllib.parse import urlsplit
 
 from flask import Flask, jsonify, request, session, redirect, send_from_directory
 from werkzeug.exceptions import HTTPException
-from .archive import CloudArchive
+from .archive import CloudArchive,TASK_POLL_SECONDS,TAKEOVER_AFTER_SECONDS
 from .http_compression import compress_response
 from .contracts.analysis import POLICY
 from .contracts.protocol import Problem, require, SOURCES, VERSION
@@ -54,6 +54,7 @@ def create_app(archive, *, admin_key, session_secret, public_origin, allow_http=
             header = request.headers.get('Authorization','')
             require(header.startswith('Bearer '),'Device bearer token required','UNAUTHORIZED',401)
             request.device = archive.authenticate(header[7:])
+            require(bool(request.headers.get('X-Sync-Job'))==bool(request.headers.get('X-Sync-Worker')),'Both task headers are required',status=400)
             return
         if request.path=='/auth/login':
             if request.method=='POST':
@@ -71,6 +72,12 @@ def create_app(archive, *, admin_key, session_secret, public_origin, allow_http=
         response.headers.update({'Cache-Control':'no-store','X-Content-Type-Options':'nosniff',
             'Referrer-Policy':'same-origin','Content-Security-Policy':"default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; object-src 'none'; base-uri 'none'; frame-ancestors 'none'"})
         if parsed.scheme=='https':response.headers['Strict-Transport-Security']='max-age=31536000'
+        if (request.path.startswith('/sync/v1/') and '/jobs/' not in request.path
+                and request.path!='/sync/v1/connect' and response.status_code<400
+                and response.is_json and getattr(request,'device',None)):
+            control=archive.contact(request.device['id'],request.headers.get('X-Sync-Job'),request.headers.get('X-Sync-Worker'))
+            if control is not None:
+                value=response.get_json();value['control']=control;response.set_data(app.json.dumps(value))
         return compress_response(response)
 
     @app.errorhandler(Exception)
@@ -195,10 +202,14 @@ def create_app(archive, *, admin_key, session_secret, public_origin, allow_http=
 
     @app.get('/sync/v1/capabilities')
     def capabilities():return jsonify(version=VERSION,instance=archive.instance,maxRequestBytes=archive.max_request,
-        deviceId=device_id(),remoteControl=bool(request.device['control']),maxProgressFiles=128,fingerprintAlgorithm='legacy-path-sha256-v1',privacy=POLICY,compression=['identity'])
+        deviceId=device_id(),remoteControl=bool(request.device['control']),taskPollSeconds=TASK_POLL_SECONDS,
+        takeoverAfterSeconds=TAKEOVER_AFTER_SECONDS,maxProgressFiles=128,fingerprintAlgorithm='legacy-path-sha256-v1',privacy=POLICY,compression=['identity'])
 
     @app.post('/sync/v1/progress/query')
-    def progress_query():return jsonify(archive.query_progress(device_id(),request.get_json()['files']))
+    def progress_query():
+        value=request.get_json()
+        return jsonify(archive.query_progress(device_id(),value['files'],mark_seen=value.get('markSeen') is True,
+                                             include_context=value.get('includeContext') is True))
 
     @app.post('/sync/v1/context')
     def context():
@@ -211,7 +222,10 @@ def create_app(archive, *, admin_key, session_secret, public_origin, allow_http=
     def batch():
         tag=request.headers.get('If-Match','')
         require(tag.startswith('"') and tag.endswith('"'),'Quoted revision ETag required',status=400)
-        return jsonify(archive.commit_batch(device_id(),request.headers.get('Idempotency-Key'),request.get_json(),int(tag[1:-1])))
+        value=request.get_json()
+        if request.headers.get('X-Sync-Job'):
+            require(value.get('jobId')==request.headers['X-Sync-Job'] and value.get('workerId')==request.headers['X-Sync-Worker'],'Task header/body mismatch')
+        return jsonify(archive.commit_batch(device_id(),request.headers.get('Idempotency-Key'),value,int(tag[1:-1])))
 
     @app.get('/sync/v1/receipts/<key>')
     def receipt(key):return jsonify(receipt=archive.receipt(device_id(),key))
@@ -223,15 +237,22 @@ def create_app(archive, *, admin_key, session_secret, public_origin, allow_http=
     def finish_scan():
         value=request.get_json();return jsonify(missing=archive.finish_scan(device_id(),value['sources'],value['seen']))
 
-    @app.post('/sync/v1/heartbeat')
-    def heartbeat():archive.heartbeat(device_id(),request.get_json());return jsonify(ok=True)
+    @app.post('/sync/v1/connect')
+    def connect():archive.connect(device_id(),request.get_json());return jsonify(ok=True)
 
-    @app.post('/sync/v1/jobs/claim')
-    def claim():return jsonify(job=archive.claim(device_id(),request.get_json()['workerId']))
+    @app.get('/sync/v1/jobs/next')
+    def next_job():return jsonify(delivery=archive.next_job(device_id(),request.args['workerId']))
 
-    @app.post('/sync/v1/jobs/<jid>/pulse')
-    def pulse(jid):
-        value=request.get_json();return jsonify(archive.pulse(device_id(),jid,value['workerId'],value.get('progress',{}),value.get('result')))
+    @app.post('/sync/v1/jobs/<jid>/received')
+    def received(jid):
+        value=request.get_json();return jsonify(archive.received(device_id(),jid,value['workerId'],value['deliveryToken']))
+
+    @app.get('/sync/v1/jobs/<jid>/commands')
+    def commands(jid):return jsonify(archive.commands(device_id(),jid,request.headers.get('X-Sync-Worker')))
+
+    @app.post('/sync/v1/jobs/<jid>/finish')
+    def finish(jid):
+        value=request.get_json();return jsonify(archive.finish(device_id(),jid,value['workerId'],value.get('progress',{}),value['result']))
 
     return app
 

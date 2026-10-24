@@ -93,7 +93,10 @@ def run(origin,owner_file,*,restart_project=None):
                         raise RuntimeError('Synthetic cloud task did not succeed')
                     return value and value['id']==job['id'] and value['state']=='SUCCEEDED'
                 wait(finished)
-            sync_job();checks.append('cloud command -> stateless daemon -> batch POST')
+            sync_job();checks.append('cloud command -> FIFO GET -> received ACK -> stateless daemon -> batch POST')
+            task=dashboard()['job'];assert task['received_at']>0
+            assert not any(entry['id']==task['id'] for entry in dashboard()['queue'])
+            checks.append('received ACK dequeues pending entry; execution history remains')
             session=call('GET','/api/sessions',params={'q':sid}).json()['items'][0]
             assert session['messageCount']==4 and session['userMessageCount']==1
             cloud_sid=quote(session['id'],safe='')

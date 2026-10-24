@@ -36,7 +36,7 @@ def append(path,rows):
 class FlaskRemote:
     def __init__(self,app,token):
         self.client=app.test_client();self.token=token;self.url='https://cloud.test';self.calls=[]
-        self.lose_commit=False;self.fail_next=False;self.batches=[];self.batch_keys=[];self.progress_requests=[]
+        self.lose_commit=False;self.lose_received=False;self.fail_next=False;self.batches=[];self.batch_keys=[];self.progress_requests=[]
 
     def call(self,method,path,**kwargs):
         self.calls.append((method,path))
@@ -52,6 +52,8 @@ class FlaskRemote:
         value=response.get_json()
         if response.status_code>=400:
             error=value['error'];raise Problem(error['code'],error['message'],response.status_code)
+        if self.lose_received and path.endswith('/received'):
+            self.lose_received=False;raise Problem('NETWORK_UNAVAILABLE','Lost task receipt confirmation response',503)
         if self.lose_commit and path=='/sync/v1/batches':
             self.lose_commit=False;raise Problem('NETWORK_UNAVAILABLE','Lost commit response',503)
         return value
@@ -275,24 +277,27 @@ class ServerDeamonIntegrationTests(unittest.TestCase):
         self.assertFalse(self.archive.db.get_session('claude:1')['available'])
         self.assertEqual(self.archive.db.list_sessions()[1],3)
 
-    def test_jobs_idempotence_control_expiry_and_lease_fencing(self):
-        device=self.device['deviceId'];job=self.archive.enqueue(device,'start',[])
-        self.assertEqual(self.archive.enqueue(device,'start',[])['id'],job['id'])
-        self.assertEqual(self.archive.enqueue(device,'duplicate-click',[])['id'],job['id'])
-        claimed=self.archive.claim(device,'worker1');self.assertEqual(claimed['id'],job['id'])
-        with self.assertRaises(Problem):self.archive.claim(device,'worker2')
-        self.archive.control(device,job['id'],'pause')
-        self.assertEqual(self.archive.pulse(device,job['id'],'worker1',{})['desired'],'pause')
-        self.archive.control(device,job['id'],'run')
-        with self.archive.db.get_connection() as conn:conn.execute('UPDATE dist_jobs SET lease_until=0')
-        self.archive.claim(device,'worker2')
-        with self.assertRaises(Problem):self.archive.pulse(device,job['id'],'worker1',{})
-        self.archive.control(device,job['id'],'cancel')
-        self.assertEqual(self.archive.pulse(device,job['id'],'worker2',{},result={'failed':0})['state'],'CANCELLED')
-        self.assertEqual(self.archive.pulse(device,job['id'],'worker2',{},result={'failed':0})['state'],'CANCELLED')
-        queued=self.archive.enqueue(device,'expired',[])
-        with self.archive.db.get_connection() as conn:conn.execute('UPDATE dist_jobs SET expires=0 WHERE id=?',(queued['id'],))
-        self.assertIsNone(self.archive.claim(device,'worker3'))
+    def test_fifo_delivery_ack_and_execution_fencing_through_api(self):
+        device=self.device['deviceId'];first=self.archive.enqueue(device,'start',[])
+        second=self.archive.enqueue(device,'second',[])
+        self.assertEqual(self.archive.enqueue(device,'start',[])['id'],first['id'])
+        delivery=self.remote.call('GET','/sync/v1/jobs/next',params={'workerId':'worker1'})['delivery']
+        self.assertEqual(delivery['job']['id'],first['id']);self.assertEqual(self.archive.dashboard()[0]['queueCount'],2)
+        ack={'workerId':'worker1','deliveryToken':delivery['deliveryToken']}
+        received=self.remote.call('POST',f'/sync/v1/jobs/{first["id"]}/received',json=ack)
+        self.assertFalse(received['terminal']);self.assertEqual(self.archive.dashboard()[0]['queueCount'],1)
+        self.remote.call('POST',f'/sync/v1/jobs/{first["id"]}/received',json=ack)
+        self.assertEqual(self.archive.dashboard()[0]['queueCount'],1)
+        self.assertIsNone(self.archive.next_job(device,'worker2'))
+        self.archive.control(device,first['id'],'pause')
+        self.assertEqual(self.archive.commands(device,first['id'],'worker1')['control']['desired'],'pause')
+        with self.archive.db.get_connection() as conn:conn.execute('UPDATE dist_jobs SET lease_until=0 WHERE id=?',(first['id'],))
+        resume=self.archive.next_job(device,'worker2');self.assertEqual(resume['job']['id'],first['id'])
+        self.archive.received(device,first['id'],'worker2',resume['deliveryToken'])
+        with self.assertRaises(Problem):self.archive.commands(device,first['id'],'worker1')
+        self.archive.control(device,first['id'],'cancel')
+        self.assertEqual(self.archive.finish(device,first['id'],'worker2',{}, {'failed':0})['state'],'CANCELLED')
+        self.assertEqual(self.archive.next_job(device,'worker2')['job']['id'],second['id'])
         disabled=self.archive.add_device('upload only')
         with self.assertRaises(Problem):self.archive.enqueue(disabled['deviceId'],'x',[])
 
@@ -454,7 +459,7 @@ class ServerDeamonIntegrationTests(unittest.TestCase):
             result=SyncCoordinator(self.repo,[adapter],quiet_seconds=0,progress_query_files=3).run()
         self.assertEqual(result['initialized'],7,result)
         self.assertEqual([len(files) for files in self.remote.progress_requests],[3,3,1])
-        self.assertTrue(all(set(f)=={'source','path'} for group in self.remote.progress_requests for f in group))
+        self.assertTrue(all(set(f)=={'source','path','modified','size','parserVersion'} for group in self.remote.progress_requests for f in group))
 
     def test_restart_mid_file_uses_cloud_cursor_without_local_state(self):
         path=self.source/'restart.jsonl';rows=[{'type':'user','sessionId':'restart','uuid':str(i),
@@ -489,7 +494,8 @@ class ServerDeamonIntegrationTests(unittest.TestCase):
              patch('deamon.syncer.time.sleep',side_effect=KeyboardInterrupt),\
              patch.object(sys,'argv',['syncer','--cloud','https://cloud.test','--token-file',str(token),'--roots-file',str(roots)]):
             with self.assertRaises(KeyboardInterrupt):main()
-        self.assertTrue(any(p=='/sync/v1/jobs/claim' for _,p in self.remote.calls))
+        self.assertTrue(any(p=='/sync/v1/jobs/next' for _,p in self.remote.calls))
+        self.assertFalse(any('heartbeat' in p or '/pulse' in p for _,p in self.remote.calls))
         self.assertFalse(self.remote.progress_requests)
         self.assertFalse(self.remote.batches)
         self.assertEqual({str(p) for p in self.root.rglob('*') if p.is_file()},files_before)
@@ -507,7 +513,10 @@ class ServerDeamonIntegrationTests(unittest.TestCase):
                                       '--roots-file',str(roots),'--quiet-seconds','0']):
             with self.assertRaises(KeyboardInterrupt):main()
         calls=[p for _,p in self.remote.calls]
-        self.assertLess(calls.index('/sync/v1/jobs/claim'),calls.index('/sync/v1/progress/query'))
+        self.assertLess(calls.index('/sync/v1/jobs/next'),calls.index(f'/sync/v1/jobs/{job["id"]}/received'))
+        self.assertLess(calls.index(f'/sync/v1/jobs/{job["id"]}/received'),calls.index('/sync/v1/progress/query'))
+        self.assertEqual(calls.count('/sync/v1/jobs/next'),1)
+        self.assertFalse(any('heartbeat' in p or '/pulse' in p for p in calls))
         self.assertLess(calls.index('/sync/v1/progress/query'),calls.index('/sync/v1/batches'))
         self.assertEqual(json.loads(self.remote.batches[0])['jobId'],job['id'])
         self.assertEqual(self.archive.db.get_session('claude:c')['messageCount'],1)
@@ -528,6 +537,117 @@ class ServerDeamonIntegrationTests(unittest.TestCase):
         self.assertEqual(result.returncode,0,result.stderr)
         self.assertNotIn('--state',result.stdout)
         self.assertIn('--progress-query-files',result.stdout)
+
+    def test_request_count_for_many_small_and_unchanged_files(self):
+        paths=[]
+        for i in range(20):
+            path=self.source/f'load-{i}.jsonl';write(path,[{'type':'user','sessionId':f'load-{i}','message':{'content':'small'}}]);paths.append(path)
+        adapter=ClaudeAdapter(paths);self.remote.calls.clear()
+        result=SyncCoordinator(self.repo,[adapter],quiet_seconds=0,progress_query_files=8).run()
+        self.assertEqual(result['initialized'],20,result)
+        self.assertEqual(len(self.remote.calls),3+20+1)  # progress windows + POSTs + finish scan
+        self.assertFalse(any(p.endswith('/context') or 'presence' in p for _,p in self.remote.calls))
+        self.remote.calls.clear()
+        result=SyncCoordinator(self.repo,[adapter],quiet_seconds=0,progress_query_files=8).run()
+        self.assertEqual(result['unchanged'],20,result)
+        self.assertEqual(len(self.remote.calls),3+1)
+        self.assertFalse(any('presence' in p or 'heartbeat' in p or '/batches' in p for _,p in self.remote.calls))
+
+    def test_commit_receipt_reuses_context_for_all_followup_batches(self):
+        path,adapter=self.claude();self.sync(adapter)
+        append(path,[{'type':'user','sessionId':'c','uuid':str(i),'message':{'content':'x'*500}} for i in range(40)])
+        self.remote.calls.clear();self.remote.batches.clear()
+        result=SyncCoordinator(self.repo,[adapter],quiet_seconds=0,batch_bytes=8192).run()
+        self.assertEqual(result['failed'],0,result);self.assertGreater(len(self.remote.batches),1)
+        self.assertFalse(any(p=='/sync/v1/context' for _,p in self.remote.calls))
+        self.assertEqual(len(self.remote.calls),1+len(self.remote.batches)+1)
+        self.assertEqual(self.archive.db.get_session('claude:c')['messageCount'],41)
+
+    def test_no_history_upload_before_delivery_received_ack(self):
+        job=self.archive.enqueue(self.device['deviceId'],'must-ack',[])
+        delivery=self.remote.call('GET','/sync/v1/jobs/next',params={'workerId':'worker'})['delivery']
+        path,adapter=self.claude();doc,info=self.planned(adapter,path);body=self.batch(doc,info)
+        body.update(jobId=job['id'],workerId='worker')
+        with self.assertRaises(Problem):self.archive.commit_batch(self.device['deviceId'],'before-ack',body,0)
+        self.assertIsNone(self.archive.db.get_session('claude:c'))
+        self.assertEqual(self.archive.dashboard()[0]['queueCount'],1)
+        self.remote.call('POST',f'/sync/v1/jobs/{job["id"]}/received',json={'workerId':'worker','deliveryToken':delivery['deliveryToken']})
+        self.archive.commit_batch(self.device['deviceId'],'after-ack',body,0)
+        self.assertEqual(self.archive.db.get_session('claude:c')['messageCount'],1)
+
+    def test_idle_poll_wait_is_one_minute_and_has_no_heartbeat(self):
+        import sys
+        from deamon.syncer import main
+        path,adapter=self.claude();token=self.root/'idle.token';token.write_text(self.device['token'])
+        with patch('deamon.syncer.Remote',return_value=self.remote),patch('deamon.syncer.default_adapters',return_value=[adapter]),\
+             patch.object(adapter,'discover',side_effect=AssertionError('No command yet')),\
+             patch('deamon.syncer.time.sleep',side_effect=KeyboardInterrupt) as sleep,\
+             patch.object(sys,'argv',['syncer','--cloud','https://cloud.test','--token-file',str(token)]):
+            with self.assertRaises(KeyboardInterrupt):main()
+        sleep.assert_called_once_with(60)
+        self.assertEqual(sum(p=='/sync/v1/jobs/next' for _,p in self.remote.calls),1)
+        self.assertEqual(sum(p=='/sync/v1/connect' for _,p in self.remote.calls),1)
+        self.assertFalse(any('heartbeat' in p or '/pulse' in p for _,p in self.remote.calls))
+
+    def test_lost_task_received_response_resumes_same_cloud_task_after_restart(self):
+        import sys
+        from deamon.syncer import main
+        path,adapter=self.claude();token=self.root/'receipt.token';token.write_text(self.device['token'])
+        first=self.archive.enqueue(self.device['deviceId'],'lost-ack',['claude'])
+        second=self.archive.enqueue(self.device['deviceId'],'later',['claude'])
+        self.remote.lose_received=True
+        arguments=['deamon','--cloud','https://cloud.test','--token-file',str(token),'--quiet-seconds','0']
+        def once():
+            with patch('deamon.syncer.Remote',return_value=self.remote),patch('deamon.syncer.default_adapters',return_value=[adapter]),\
+                 patch('deamon.syncer.time.sleep',side_effect=KeyboardInterrupt),patch.object(sys,'argv',arguments):
+                with self.assertRaises(KeyboardInterrupt):main()
+        once()
+        self.assertFalse(self.remote.batches)
+        self.assertEqual(self.archive.dashboard()[0]['queueCount'],1)
+        with self.archive.db.get_connection() as conn:conn.execute('UPDATE dist_jobs SET lease_until=0 WHERE id=?',(first['id'],))
+        once()
+        self.assertEqual(json.loads(self.remote.batches[0])['jobId'],first['id'])
+        self.assertEqual(self.archive.dashboard()[0]['queue'][0]['id'],second['id'])
+        with self.archive.db.get_connection() as conn:self.assertEqual(conn.execute('SELECT state FROM dist_jobs WHERE id=?',(first['id'],)).fetchone()[0],'SUCCEEDED')
+
+    def test_daemon_finishes_each_task_before_fetching_next_fifo_task(self):
+        import sys
+        from deamon.syncer import main
+        path,adapter=self.claude();token=self.root/'serial.token';token.write_text(self.device['token'])
+        jobs=[self.archive.enqueue(self.device['deviceId'],f'fifo-{i}',['claude']) for i in range(3)]
+        arguments=['deamon','--cloud','https://cloud.test','--token-file',str(token),'--quiet-seconds','0']
+        with patch('deamon.syncer.Remote',return_value=self.remote),patch('deamon.syncer.default_adapters',return_value=[adapter]),\
+             patch('deamon.syncer.time.sleep',side_effect=[None,KeyboardInterrupt]),patch.object(sys,'argv',arguments):
+            with self.assertRaises(KeyboardInterrupt):main()
+        paths=[p for _,p in self.remote.calls];gets=[i for i,p in enumerate(paths) if p=='/sync/v1/jobs/next']
+        self.assertEqual(len(gets),2)
+        self.assertLess(paths.index(f'/sync/v1/jobs/{jobs[0]["id"]}/finish'),gets[1])
+        self.assertLess(gets[1],paths.index(f'/sync/v1/jobs/{jobs[1]["id"]}/received'))
+        self.assertEqual(len(self.remote.batches),1)  # second task sees cloud progress, no duplicate upload
+        self.assertEqual(self.archive.dashboard()[0]['queue'][0]['id'],jobs[2]['id'])
+
+    def test_control_is_piggybacked_and_replayed_receipt_returns_latest_control(self):
+        job=self.archive.enqueue(self.device['deviceId'],'control',[]);delivery=self.archive.next_job(self.device['deviceId'],'worker')
+        self.archive.received(self.device['deviceId'],job['id'],'worker',delivery['deliveryToken'])
+        path,adapter=self.claude();doc,info=self.planned(adapter,path);value=self.batch(doc,info);value.update(jobId=job['id'],workerId='worker')
+        headers={'Content-Type':'application/json','Idempotency-Key':'control-key','If-Match':'"0"','X-Sync-Job':job['id'],'X-Sync-Worker':'worker'}
+        first=self.remote.call('POST','/sync/v1/batches',data=encode_batch(value),headers=headers)
+        self.assertEqual(first['control']['desired'],'run');self.assertIn('nextContext',first)
+        self.archive.control(self.device['deviceId'],job['id'],'pause')
+        repeated=self.remote.call('POST','/sync/v1/batches',data=encode_batch(value),headers=headers)
+        self.assertEqual(repeated['control']['desired'],'pause')
+        self.assertEqual(repeated['nextContext'],first['nextContext'])
+        self.assertEqual(self.archive.db.get_session('claude:c')['messageCount'],1)
+
+    def test_cancel_from_progress_query_stops_before_reading_history(self):
+        path,adapter=self.claude();job=self.archive.enqueue(self.device['deviceId'],'cancel-before-body',[])
+        delivery=self.archive.next_job(self.device['deviceId'],'worker')
+        self.archive.received(self.device['deviceId'],job['id'],'worker',delivery['deliveryToken'])
+        self.repo.job=job['id'];self.repo.worker='worker';self.archive.control(self.device['deviceId'],job['id'],'cancel')
+        with patch.object(adapter,'parse',side_effect=AssertionError('Cancel before body')):
+            result=self.sync(adapter)
+        self.assertTrue(result['cancelled']);self.assertFalse(self.remote.batches)
+        self.assertFalse(any('/commands' in p or 'heartbeat' in p for _,p in self.remote.calls))
 
     def test_tls_configuration_and_original_db_safeguards(self):
         for url in ['http://example.com','https://user:password@example.com','https://example.com/path','https://example.com?token=x']:
