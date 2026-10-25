@@ -34,10 +34,12 @@ Agent 原始历史（只读）
 ```bash
 python -m pip install -r local/requirements.txt
 python -m local            # 先增量导入历史，完成后才打开 http://localhost:8000
+python -m local --port 8010   # 8000 被其他程序占用时换端口
 ```
 
-数据库在 `local/state/local.db`（Git 忽略）。旧的完整历史库 `local/viewer.db`
-保持只读，可一次性导入：`python -m local.migrate --source local/viewer.db`。
+数据库在 `local/state/local.db`（Git 忽略）。首次导入全部历史可能需要十几到几十分钟，
+之后每次启动只处理变化的文件。旧的完整历史库 `local/viewer.db` 保持只读，可在停止
+本地服务后一次性导入：`python -m local.migrate --source local/viewer.db`。
 
 ### 2. 云端 Web Server（Docker）
 
@@ -53,8 +55,20 @@ docker compose -f server/deploy/docker-compose.local.yml exec -T viewer cat /dat
 
 ### 3. 连接并同步
 
-在本地页面展开 **Cloud sync console**：填写云端地址和 API Key → Test →
+在本地页面展开 **Cloud sync console**：填写云端地址和**上传** API Key → Test →
 Save → **Sync to cloud**。保存连接不会上传；同步只在点击时运行。
+
+云端页面的会话列表会显示每个会话来自哪台机器（上传 Key 的名称），并可用 **Machine**
+下拉框筛选。
+
+### 4. 程序化查询历史（可选）
+
+```bash
+curl -H "Authorization: Bearer <查询 Key>" "http://localhost:41880/query/v1/machines"
+curl -H "Authorization: Bearer <查询 Key>" "http://localhost:41880/query/v1/sessions?q=STT&machine=<机器id>"
+```
+
+完整接口见 [server/README.md](server/README.md#查询-api只读)。
 
 ## 同步行为
 
