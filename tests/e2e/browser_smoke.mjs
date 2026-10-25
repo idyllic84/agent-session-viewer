@@ -64,8 +64,15 @@ try {
     if (mode === '--analysis-data') {
         assert.ok(security.keys > 0); assert.ok(security.sessions > 0);
         await waitFor('document.querySelectorAll(".session-item").length > 0');
+        // Every cloud session shows which computer (upload key) it came from; the list can be filtered by machine.
+        await waitFor('document.querySelectorAll("#machineSelect option").length >= 2');
+        assert.ok(await evaluate('[...document.querySelectorAll(".session-item .machine-badge")].some(b => b.textContent === "Docker synthetic smoke")'));
+        const machine = await evaluate('[...document.querySelectorAll("#machineSelect option")].find(o => o.textContent.startsWith("Docker synthetic smoke")).value');
+        await evaluate(`document.getElementById("machineSelect").value=${JSON.stringify(machine)}; document.getElementById("machineSelect").dispatchEvent(new Event("change"))`);
+        await waitFor('document.querySelectorAll(".session-item").length > 0 && [...document.querySelectorAll(".session-item .machine-badge")].every(b => b.textContent === "Docker synthetic smoke")');
         await evaluate('document.querySelector(".session-item").click()');
         await waitFor('document.querySelectorAll(".message-item").length === 5');
+        assert.ok(await evaluate('document.getElementById("conversationTitle").textContent.endsWith(" · Docker synthetic smoke")'));
         assert.equal(await evaluate('document.querySelectorAll(".message-item.tool-use").length'), 1);
         assert.equal(await evaluate('document.querySelectorAll(".message-item.tool-result").length'), 1);
         await evaluate('document.querySelector(".message-item.tool-result").click()');
@@ -83,7 +90,7 @@ try {
     assert.deepEqual(loginOrigins, [origin]);
     assert.deepEqual(errors, []);
     console.log(mode === '--analysis-data'
-        ? 'Docker analysis browser passed: timestamped messages, prose, invocation and outcome summary visible; original replay hidden; auth/CSRF intact.'
+        ? 'Docker analysis browser passed: machine badge/filter/title, timestamped messages, prose, invocation and outcome summary visible; original replay hidden; auth/CSRF intact.'
         : 'Docker browser passed: password login, protected viewer/assets, key console renders, CSRF rejection, key shown once.');
 } finally {
     socket?.close();

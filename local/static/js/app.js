@@ -230,7 +230,7 @@ class App {
             const page = await fetchSessionMessages(sessionId, 0, branchSelect.value);
             if (generation !== this.messageGeneration) return;
             branchSelect.disabled = !page.session.metadata.defaultLeaf;
-            document.getElementById('conversationTitle').textContent = page.session.name;
+            document.getElementById('conversationTitle').textContent = page.session.name + (page.session.machine ? ` · ${page.session.machine.name}` : '');
             this.activeFilters = new Set(['user', 'assistant', 'tool-use', 'tool-result']);
             document.getElementById('uuidSearch').value = '';
             this.conversationView.render(page.items);

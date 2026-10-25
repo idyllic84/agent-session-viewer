@@ -62,8 +62,17 @@ def create_app(archive, *, session_secret, public_origin, allow_http=False):
             return
         if request.path.startswith('/ingest/v1/'):
             header = request.headers.get('Authorization', '')
-            require(header.startswith('Bearer '), 'API key required', 'UNAUTHORIZED', 401)
-            request.client = archive.authenticate(header[7:].strip())
+            require(header.startswith('Bearer '), 'Upload API key required', 'UNAUTHORIZED', 401)
+            request.client = archive.authenticate(header[7:].strip(), 'upload')
+            return
+        if request.path.startswith('/query/v1/'):
+            # Read-only history API: a query API key, or the signed-in owner.
+            require(request.method in ('GET', 'HEAD'), 'The query API is read-only', 'METHOD_NOT_ALLOWED', 405)
+            header = request.headers.get('Authorization', '')
+            if header.startswith('Bearer '):
+                request.reader = archive.authenticate(header[7:].strip(), 'query')
+                return
+            require(owner(), 'Query API key or owner login required', 'UNAUTHORIZED', 401)
             return
         if request.path in ('/auth/login', '/login.css'):
             if request.method == 'POST':
@@ -169,7 +178,7 @@ def create_app(archive, *, session_secret, public_origin, allow_http=False):
     def cloud_static(name):
         return send_from_directory(STATIC, name)
 
-    # ----- console: upload keys and owner password -----
+    # ----- console: API keys and owner password -----
     @app.get('/api/keys')
     def keys():
         return jsonify(archive.keys())
@@ -177,7 +186,8 @@ def create_app(archive, *, session_secret, public_origin, allow_http=False):
     @app.post('/api/keys')
     def create_key():
         value = request.get_json(silent=True) or {}
-        return jsonify(archive.create_key(value.get('name'), expires_days=value.get('expiresDays'))), 201
+        return jsonify(archive.create_key(value.get('name'), expires_days=value.get('expiresDays'),
+                                          kind=value.get('kind', 'upload'))), 201
 
     @app.post('/api/keys/<client>/<action>')
     def key_action(client, action):
@@ -210,18 +220,21 @@ def create_app(archive, *, session_secret, public_origin, allow_http=False):
         return jsonify([{'id': key, 'label': label, 'available': True, 'roots': [],
                          'capabilities': {'readOnly': True, 'sourceDelete': False}} for key, label in SOURCES.items()])
 
-    @app.get('/api/sessions')
-    def sessions():
-        offset, limit = page(100, 500)
-        items, total = archive.db.list_sessions(source=request.args.get('source'), project=request.args.get('project'),
-                                                query=request.args.get('q', '').strip(), offset=offset, limit=limit)
-        clients = archive.session_clients([item['id'] for item in items])
+    def with_machines(items):
+        machines = archive.session_clients([item['id'] for item in items])
         for item in items:
-            item['uploadedBy'] = clients.get(item['id'])
-        return jsonify(items=items, total=total, nextCursor=offset + len(items) if offset + len(items) < total else None)
+            machine = machines.get(item['id'])
+            item['machine'] = machine; item['uploadedBy'] = machine['name'] if machine else None
+        return items
 
-    @app.get('/api/sessions/<path:sid>/messages')
-    def messages(sid):
+    def history_page():
+        offset, limit = page(100, 500)
+        items, total = archive.db.list_sessions(source=request.args.get('source') or None, project=request.args.get('project') or None,
+                                                query=request.args.get('q', '').strip(), offset=offset, limit=limit,
+                                                client=request.args.get('machine') or None)
+        return jsonify(items=with_machines(items), total=total, nextCursor=offset + len(items) if offset + len(items) < total else None)
+
+    def history_messages(sid):
         offset, limit = page()
         require(not request.args.get('branch'), 'Branch replay is not stored in analysis mode', 'ANALYSIS_VIEW', 400)
         with archive.db.transaction(write=False):
@@ -230,8 +243,20 @@ def create_app(archive, *, session_secret, public_origin, allow_http=False):
             value = archive.db.get_messages(sid, offset, limit)
             if value is None:
                 raise Problem('NOT_FOUND', 'Unknown session', 404)
-            value['sessionRevision'] = revision
+            value['sessionRevision'] = revision; with_machines([value['session']])
             return jsonify(value)
+
+    @app.get('/api/machines')
+    def machines():
+        return jsonify(archive.machines())
+
+    @app.get('/api/sessions')
+    def sessions():
+        return history_page()
+
+    @app.get('/api/sessions/<path:sid>/messages')
+    def messages(sid):
+        return history_messages(sid)
 
     @app.get('/api/messages/<path:mid>/raw')
     def raw(mid):
@@ -245,7 +270,32 @@ def create_app(archive, *, session_secret, public_origin, allow_http=False):
     def legacy_status():
         return jsonify(running=False, result=None)
 
-    # ----- ingest (API key) -----
+    # ----- read-only query API (query API key or owner session) -----
+    @app.get('/query/v1/machines')
+    def query_machines():
+        return jsonify(items=archive.machines())
+
+    @app.get('/query/v1/sources')
+    def query_sources():
+        return jsonify(items=[{'id': key, 'label': label} for key, label in SOURCES.items()])
+
+    @app.get('/query/v1/sessions')
+    def query_sessions():
+        return history_page()
+
+    @app.get('/query/v1/sessions/<path:sid>/messages')
+    def query_messages(sid):
+        return history_messages(sid)
+
+    @app.get('/query/v1/sessions/<path:sid>')
+    def query_session(sid):
+        session_value = archive.db.get_session(sid)
+        if session_value is None:
+            raise Problem('NOT_FOUND', 'Unknown session', 404)
+        session_value['sessionRevision'] = archive.session_revision(sid)
+        return jsonify(with_machines([session_value])[0])
+
+    # ----- ingest (upload API key) -----
     @app.get('/ingest/v1/status')
     def ingest_status():
         return jsonify(archive.status(request.client, request.args.get('datasetId')))

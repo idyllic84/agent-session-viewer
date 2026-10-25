@@ -12,7 +12,8 @@ export function fetchSources() { return requestJson('/api/sources'); }
 export async function fetchSessions(source = '', query = '', signal) {
     let cursor = 0; const items = [];
     do {
-        const page = await requestJson(`/api/sessions?${new URLSearchParams({ source, q: query, cursor, limit: 500 })}`, { signal });
+        const machine = document.getElementById('machineSelect')?.value || '';
+        const page = await requestJson(`/api/sessions?${new URLSearchParams({ source, q: query, machine, cursor, limit: 500 })}`, { signal });
         items.push(...page.items); cursor = page.nextCursor;
     } while (cursor !== null);
     return items;

@@ -21,8 +21,8 @@ python -m unittest discover -s tests
 - `test_local_integration.py`：本地服务子进程先导入再监听、单实例锁。
 - `test_layout.py`：两应用边界、数据库/密钥 Git 排除。
 - `e2e/local_browser.mjs`：真实浏览器操作本地查看页和云同步控制台（合成数据 + 进程内云端）。
-- `e2e/smoke.py`：Docker 云端 + 真实本地服务子进程 + 重启持久化。
-- `e2e/browser_smoke.mjs`：Docker 云端页面真实浏览器：密码登录、Key 控制台、CSRF。
+- `e2e/smoke.py`：Docker 云端 + 真实本地服务子进程 + 重启持久化 + 查询 Key 读取历史。
+- `e2e/browser_smoke.mjs`：Docker 云端页面真实浏览器：密码登录、Key 控制台、CSRF、机器徽标/筛选。
 
 ```bash
 node --experimental-default-type=module tests/e2e/local_browser.mjs

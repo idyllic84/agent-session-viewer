@@ -1,7 +1,7 @@
 # 云端 Web Server
 
-接收本地 Web Server 上传的分析数据，提供密码保护的查看页与控制台（上传 API Key、
-密码）。云端从不向本地电脑下发任务。主说明见 [根目录 README](../README.md)，
+接收本地 Web Server 上传的分析数据，提供密码保护的查看页与控制台（上传/查询 API Key、
+密码），以及只读的历史查询 API。页面和查询结果都标明每个会话来自哪台机器。云端从不向本地电脑下发任务。主说明见 [根目录 README](../README.md)，
 设计见 [docs/two-web-servers-design.md](../docs/two-web-servers-design.md)。
 
 ## 部署
@@ -29,13 +29,18 @@ python -m server --database server/state/cloud.db --session-key-file server/stat
 
 | 对象 | 凭据 | 能做什么 |
 |---|---|---|
-| 浏览器（Owner） | 密码 → 8 小时 Cookie 会话（HttpOnly、SameSite=Strict、HTTPS 下 Secure） | 查看、检索、管理 Key、改密码 |
-| 本地 Web Server | 上传 API Key（`Authorization: Bearer asv_<id>_<secret>`） | 仅 `/ingest/v1/*`：查询/绑定/上传自己的数据集 |
+| 浏览器（Owner） | 密码 → 8 小时 Cookie 会话（HttpOnly、SameSite=Strict、HTTPS 下 Secure） | 查看、检索、管理 Key、改密码；也可调用 `/query/v1/*` |
+| 本地 Web Server | **上传** API Key（`Authorization: Bearer asv_<id>_<secret>`） | 仅 `/ingest/v1/*`：绑定/上传自己的数据集 |
+| 脚本 / 分析程序 | **查询** API Key（同样的 Bearer 格式） | 仅 `/query/v1/*` 的 GET：只读查询全部历史 |
+
+Key 类型在控制台生成时选择，之后不能互换：上传 Key 访问查询 API、查询 Key 访问上传 API
+都返回 403 `WRONG_KEY_TYPE`。两类 Key 都不能登录控制台、管理 Key 或使用页面的 `/api/*`。
 
 - 密码以 scrypt 加盐哈希保存；修改/重置密码会使所有已有会话失效。登录有限流与表单 nonce。
 - 写操作校验 Origin、`Sec-Fetch-Site` 和 CSRF token。
 - API Key 只显示一次，库中只存 SHA-256；可设置过期、轮换（保留上传进度）、撤销。
-- API Key 不能登录控制台，浏览器 Cookie 不能调用 ingest。
+- API Key 不能登录控制台，浏览器 Cookie 不能调用 ingest（但可以调用只读的 `/query/v1/*`）。
+- 查询 Key 可读取**全部**机器的历史（单 Owner 模型），不绑定数据集，也不会出现在机器列表中。
 - 每个 Key 是一个“客户端槽位”，首次同步绑定到一台电脑的本地数据集；同一 Key 不能
   被另一台电脑复用（`DATASET_MISMATCH`），除非 Owner 在控制台显式“Allow a new computer”。
 
@@ -50,7 +55,7 @@ python -m server --database server/state/cloud.db --session-key-file server/stat
 | 字段 | 说明 |
 |---|---|
 | `clientId` | 云端内部 ID，轮换 Key 时不变 |
-| 名称 | 例如 “work laptop”，会话列表的 `uploadedBy` 显示它 |
+| 名称 | 例如 “work laptop”，即页面与查询 API 中的**机器名** |
 | Key ID + 秘密哈希 | Key 形如 `asv_<keyId>_<secret>`，只存 secret 的 SHA-256 |
 | `dataset_id` | 首次同步时绑定的本地数据集 |
 | `ack_seq` | 该客户端已被云端确认的变更序列 |
@@ -84,6 +89,38 @@ python -m server --database server/state/cloud.db --session-key-file server/stat
 | 增加一台电脑 | 为它生成新 Key |
 | 重装后新建本地库 | `datasetId` 变了：用新 Key，或在控制台对旧 Key 执行 Allow a new computer |
 
+### 页面上的机器区分
+
+- 会话列表每一项显示机器名徽标；打开会话后标题为“会话名 · 机器名”。
+- 筛选栏有 **Machine** 下拉框（含各机器会话数，已撤销的 Key 标注 revoked），可与来源、项目、
+  全文搜索组合。
+- 控制台 Key 列表显示每把上传 Key 的会话数、变更数和最后上传时间。
+
+机器名就是上传 Key 的名称，建议生成 Key 时用易识别的电脑名。
+
+## 查询 API（只读）
+
+在控制台生成类型为 **Query** 的 Key，或使用已登录的 Owner 浏览器会话：
+
+```text
+GET /query/v1/machines                              → 机器列表：id、名称、会话数、最后上传
+GET /query/v1/sources                               → 五种来源
+GET /query/v1/sessions?q=&source=&project=&machine=&cursor=&limit=
+                                                    → 会话列表/全文搜索（limit ≤ 500）
+GET /query/v1/sessions/{sessionId}                  → 会话详情
+GET /query/v1/sessions/{sessionId}/messages?cursor=&limit=&revision=
+                                                    → 消息分页（limit ≤ 2000）
+```
+
+- `machine` 参数为 `/query/v1/machines` 返回的 `id`；每个会话都带 `machine: {id, name}`。
+- `sessionId` 形如 `<datasetId>/claude:xxx`，放入 URL 时建议整体做 URL 编码（如 `encodeURIComponent`）。
+- 分页时把第一页返回的 `sessionRevision` 作为 `revision` 传入；会话中途被更新会返回 409。
+- 只允许 GET/HEAD；内容口径与页面一致（四类分析消息），不含原始记录。
+
+```bash
+curl -H "Authorization: Bearer $ASV_QUERY_KEY" "https://history.example.com/query/v1/sessions?q=STT&limit=20"
+```
+
 ## Ingest 协议（v6）
 
 ```text
@@ -114,7 +151,7 @@ GET  /ingest/v1/receipts/{key}        → 查询回执
 
 ```bash
 python -m server.manage set-password --database PATH [--stdin]   # 设置/重置密码
-python -m server.manage create-key --database PATH --name NAME    # 生成上传 Key（打印一次）
+python -m server.manage create-key --database PATH --name NAME [--kind upload|query]   # 生成 Key（打印一次）
 python -m server.manage init-session-key --directory DIR
 ```
 

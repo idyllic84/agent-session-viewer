@@ -12,6 +12,8 @@
   `last_result`；`upload_receipts` 按 throughSeq 记录。
 - 旧协议 5 云库不被打开；新部署默认 `/data/cloud-v6.db`。
 - V1 不压缩变更日志（第 6.1 节的压缩/bootstrap 留待后续）。
+- 后续增加：只读**查询 API Key** 与 `/query/v1/*`（Owner 会话同样可用）；云端页面显示每个会话
+  的机器名并可按机器筛选。详见 `server/README.md`。
 
 ---
 

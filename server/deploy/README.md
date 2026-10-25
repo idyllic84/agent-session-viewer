@@ -34,7 +34,8 @@ docker compose -f server/deploy/docker-compose.local.yml exec -T viewer cat /dat
 打开 **http://localhost:41880**，用初始密码登录，然后在 **Cloud console** 中：
 
 1. 修改 Owner 密码（12 位以上；修改后初始密码文件被删除，其它会话退出）。
-2. 为每台电脑 **Generate API key**，复制只显示一次的 Key。
+2. 为每台电脑生成一个 **Upload** 类型的 Key（名称用电脑名，页面据此区分机器），复制只显示
+   一次的 Key。需要程序化读取历史时，另生成 **Query** 类型的只读 Key。
 3. 在该电脑的本地页面填写云端地址 `http://localhost:41880` 与 Key，Test → Save → Sync。
 
 只绑定 `127.0.0.1`。端口占用时先设置 `VIEWER_LOCAL_PORT`，浏览器和本地控制台都用
@@ -115,10 +116,10 @@ docker compose --env-file server/deploy/.env -f server/deploy/docker-compose.yml
 
 ### Cloudflare 注意事项
 
-- 对应用域名禁用缓存，尤其 `/auth/*`、`/api/*`、`/ingest/*` 和私有 HTML。
+- 对应用域名禁用缓存，尤其 `/auth/*`、`/api/*`、`/ingest/*`、`/query/*` 和私有 HTML。
 - 可对 `/auth/login` POST 做边缘限流（应用自身也限流）。
-- 不要对 `/ingest/v1/*` 加 JS/CAPTCHA challenge 或交互式 Access：本地服务是机器客户端，
-  只携带 API Key。如需 Access，只保护网页路径。
+- 不要对 `/ingest/v1/*`、`/query/v1/*` 加 JS/CAPTCHA challenge 或交互式 Access：它们是机器
+  客户端，只携带 API Key。如需 Access，只保护网页路径。
 - 默认批次约 1 MiB，应用请求上限 32 MiB（`VIEWER_MAX_REQUEST_MIB`），需与套餐的
   body/timeout 限制一致；超限请求返回 413 且不会被截断。
 - Tunnel 不替代应用的密码和 API Key。

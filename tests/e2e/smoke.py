@@ -120,6 +120,16 @@ def run(origin, password_file, *, restart_project=None):
             assert 'Allowed synthetic task' in json.dumps(messages) and marker not in json.dumps(messages)
             assert all(m['timestampSource'] == 'source' for m in messages['items'])
             checks.append('explicit upload: analysis only (prose, call, outcome, timestamps); no process/subagent bodies')
+            reader = call('POST', '/api/keys', headers=headers, json={'name': 'Docker query smoke', 'kind': 'query'}).json()['key']
+            query = requests.Session(); query.trust_env = False; query.headers['Authorization'] = 'Bearer ' + reader
+            found = query.get(origin + '/query/v1/sessions', params={'q': sid}, timeout=10).json()['items']
+            assert [item['machine']['name'] for item in found] == ['Docker synthetic smoke']
+            page = query.get(origin + f"/query/v1/sessions/{quote(found[0]['id'], safe='')}/messages", timeout=10).json()
+            assert page['total'] == 4 and page['session']['machine']['name'] == 'Docker synthetic smoke'
+            assert query.get(origin + '/ingest/v1/status', timeout=10).status_code == 403
+            assert query.get(origin + '/api/keys', timeout=10).status_code == 401
+            assert web.get(origin + '/query/v1/machines', timeout=10).status_code == 200   # owner session
+            checks.append('query API key reads history with machine names; cannot upload or manage; owner can query too')
             if restart_project:
                 env = {**os.environ, 'VIEWER_LOCAL_PORT': str(parsed.port or 80)}
                 result = subprocess.run(['docker', 'compose', '-p', restart_project, '-f', str(COMPOSE), 'restart', 'viewer'],

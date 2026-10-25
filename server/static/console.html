@@ -1,8 +1,10 @@
-<details class="sync-status cloud-console" id="cloudConsole"><summary>Cloud console · upload keys &amp; password</summary>
+<details class="sync-status cloud-console" id="cloudConsole"><summary>Cloud console · API keys &amp; password</summary>
 <div class="cloud-grid">
-<section><h3>Upload API keys</h3>
-<p class="hint">Each local computer needs its own key. Paste the key and this cloud address into the local server's console. A key is shown only once.</p>
-<label>Name <input id="keyName" maxlength="160" placeholder="e.g. work laptop"></label>
+<section><h3>API keys</h3>
+<p class="hint"><b>Upload</b>: one per local computer — paste it with this cloud address into the local server's console; its name identifies that machine.
+<b>Query</b>: read-only access to all history through <code>/query/v1/*</code> (no upload, no console). A key is shown only once.</p>
+<label>Type <select id="keyKind"><option value="upload">Upload (one computer)</option><option value="query">Query (read-only history)</option></select></label>
+<label>Name <input id="keyName" maxlength="160" placeholder="e.g. work laptop / analysis notebook"></label>
 <label>Expires after (days, optional) <input id="keyExpiry" type="number" min="1" max="3650"></label>
 <button id="createKey">Generate API key</button>
 <pre id="newKey" aria-live="polite"></pre>

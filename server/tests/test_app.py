@@ -50,7 +50,7 @@ class CloudAppTests(unittest.TestCase):
         self.assertEqual(created.status_code, 201); self.assertTrue(created.json['key'].startswith('asv_'))
         listing = owner.get('/api/keys', base_url=ORIGIN)
         self.assertNotIn(created.json['key'].split('_', 2)[2], listing.text); self.assertNotIn('key_hash', listing.text)
-        self.assertIn('Upload API keys', owner.get('/', base_url=ORIGIN).text)
+        self.assertIn('Query (read-only history)', owner.get('/', base_url=ORIGIN).text)
         self.assertEqual(owner.post('/auth/logout', base_url=ORIGIN, headers=headers).status_code, 200)
         self.assertEqual(owner.get('/api/keys', base_url=ORIGIN).status_code, 401)
 
@@ -85,6 +85,68 @@ class CloudAppTests(unittest.TestCase):
         self.assertEqual(owner.get(f'/api/sessions/{sid}/messages?cursor=1&revision=0', base_url=ORIGIN).status_code, 409)
         for path in (f'/api/sessions/{sid}/records', '/api/messages/x/raw'):
             self.assertEqual(owner.get(path, base_url=ORIGIN).status_code, 410)
+
+    def upload(self, key, dataset, sid, text):
+        client = self.app.test_client(); headers = {'Authorization': 'Bearer ' + key}
+        self.assertEqual(client.post('/ingest/v1/bind', base_url=ORIGIN, headers=headers, json={'datasetId': dataset}).status_code, 200)
+        value = batch(0, [('session', sid, session(sid)), ('message', sid, {'message': message(sid, 1, text=text), 'order': [1, 0]})])
+        value['datasetId'] = dataset
+        response = client.post('/ingest/v1/batches', base_url=ORIGIN, data=json.dumps(value),
+                               headers={**headers, 'Content-Type': 'application/json', 'Idempotency-Key': dataset})
+        self.assertEqual(response.status_code, 200, response.json)
+
+    def test_query_key_reads_history_only_and_owner_can_query_too(self):
+        desktop = self.archive.create_key('desktop')['key']
+        self.upload(self.key, DATASET, 'claude:same', 'from the laptop')
+        self.upload(desktop, 'b' * 32, 'claude:same', 'from the desktop')
+        owner, headers = self.owner()
+        created = owner.post('/api/keys', base_url=ORIGIN, headers=headers, json={'name': 'notebook', 'kind': 'query'})
+        self.assertEqual((created.status_code, created.json['kind']), (201, 'query'))
+        reader = {'Authorization': 'Bearer ' + created.json['key']}; client = self.app.test_client()
+        machines = client.get('/query/v1/machines', base_url=ORIGIN, headers=reader).json['items']
+        self.assertEqual(sorted((m['name'], m['sessions']) for m in machines), [('desktop', 1), ('laptop', 1)])
+        self.assertNotIn('notebook', json.dumps(machines), 'query keys are not machines')
+        self.assertFalse(any('key' in k.lower() for m in machines for k in m))
+        everything = client.get('/query/v1/sessions', base_url=ORIGIN, headers=reader).json
+        self.assertEqual(everything['total'], 2)
+        self.assertEqual(sorted(item['machine']['name'] for item in everything['items']), ['desktop', 'laptop'])
+        laptop = next(m['id'] for m in machines if m['name'] == 'laptop')
+        only = client.get('/query/v1/sessions', base_url=ORIGIN, headers=reader, query_string={'machine': laptop, 'q': 'from the'}).json
+        self.assertEqual([(i['machine']['name'], i['id']) for i in only['items']], [('laptop', DATASET + '/claude:same')])
+        sid = DATASET + '/claude:same'
+        detail = client.get(f'/query/v1/sessions/{sid}', base_url=ORIGIN, headers=reader).json
+        self.assertEqual((detail['machine']['name'], detail['sessionRevision']), ('laptop', 1))
+        page = client.get(f'/query/v1/sessions/{sid}/messages', base_url=ORIGIN, headers=reader).json
+        self.assertEqual(page['items'][0]['message']['content'][0]['text'], 'from the laptop')
+        self.assertEqual(page['session']['machine']['name'], 'laptop')
+        # Read-only and nothing else: no ingest, console, keys or viewer-session APIs.
+        self.assertEqual(client.post('/query/v1/sessions', base_url=ORIGIN, headers=reader).status_code, 405)
+        self.assertEqual(client.get('/ingest/v1/status', base_url=ORIGIN, headers=reader).status_code, 403)
+        for path in ('/api/keys', '/api/sessions', '/'):
+            self.assertIn(client.get(path, base_url=ORIGIN, headers=reader).status_code, (302, 401), path)
+        # Upload keys cannot read; anonymous requests cannot read.
+        self.assertEqual(client.get('/query/v1/sessions', base_url=ORIGIN, headers=self.machine).status_code, 403)
+        self.assertEqual(client.get('/query/v1/sessions', base_url=ORIGIN).status_code, 401)
+        # The signed-in owner can use the same query API and the page's machine filter.
+        self.assertEqual(owner.get('/query/v1/sessions', base_url=ORIGIN).json['total'], 2)
+        self.assertEqual(owner.get('/api/sessions', base_url=ORIGIN, query_string={'machine': laptop}).json['total'], 1)
+        self.assertEqual(sorted(m['name'] for m in owner.get('/api/machines', base_url=ORIGIN).json), ['desktop', 'laptop'])
+        self.assertIn('machineSelect', owner.get('/', base_url=ORIGIN).text)
+        listing = owner.get('/api/keys', base_url=ORIGIN).json
+        self.assertEqual({k['name']: k['kind'] for k in listing}, {'laptop': 'upload', 'desktop': 'upload', 'notebook': 'query'})
+        query_id = next(k['clientId'] for k in listing if k['kind'] == 'query')
+        self.assertEqual(owner.post(f'/api/keys/{query_id}/unbind', base_url=ORIGIN, headers=headers).status_code, 404)
+        self.assertEqual(owner.post(f'/api/keys/{query_id}/revoke', base_url=ORIGIN, headers=headers).status_code, 200)
+        self.assertEqual(client.get('/query/v1/sessions', base_url=ORIGIN, headers=reader).status_code, 401)
+
+    def test_existing_databases_gain_key_kinds_without_losing_keys(self):
+        import sqlite3
+        from contextlib import closing
+        path = Path(self.temp.name) / 'cloud.db'
+        with closing(sqlite3.connect(path)) as conn:
+            conn.execute('ALTER TABLE cloud_clients DROP COLUMN kind'); conn.commit()
+        reopened = CloudArchive(path)
+        self.assertEqual(reopened.authenticate(self.key, 'upload')['kind'], 'upload')
 
     def test_no_task_queue_or_heartbeat_routes_exist(self):
         rules = {rule.rule for rule in self.app.url_map.iter_rules()}

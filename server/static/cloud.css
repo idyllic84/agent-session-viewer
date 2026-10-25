@@ -8,6 +8,8 @@ body > details { flex: none; max-height: 48vh; overflow: auto; padding: 6px 12px
 .cloud-grid input { width: 100%; box-sizing: border-box; }
 .hint { opacity: .8; margin: 0 0 6px; }
 #keyList > div { margin: 6px 0; padding: 6px 0; border-bottom: 1px solid var(--border-color, #ddd); overflow-wrap: anywhere; }
+#machineSelect { max-width: 14em; }
+.machine-badge { font-size: 11px; padding: 1px 6px; border-radius: 8px; background: var(--border-color, #ddd); margin-left: 4px; overflow-wrap: anywhere; }
 #newKey { white-space: pre-wrap; overflow-wrap: anywhere; user-select: all; }
 /* Analysis-only cloud data has neither original-event replay nor saved branches. */
 #branchSelect, button[data-action="raw"] { display: none !important; }

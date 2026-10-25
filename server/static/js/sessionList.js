@@ -27,6 +27,7 @@ export class SessionListView {
         return `<div class="session-item" data-session-id="${escapeHtml(session.id)}">
             <div class="session-header">
                 <span class="source-badge">${escapeHtml(LABELS[session.source] || session.source)}${session.metadata?.relationship ? ` · ${escapeHtml(session.metadata.relationship)}` : ''}</span>
+                ${session.machine ? `<span class="machine-badge" title="Uploaded by this computer's key">${escapeHtml(session.machine.name)}</span>` : ''}
                 <span class="message-count" title="User messages / total messages (including assistant, tool and system records)">${session.userMessageCount ?? session.metadata?.userMessageCount ?? 0} / ${session.messageCount}</span>
             </div>
             <div class="session-name" title="${escapeHtml(session.name)}">${escapeHtml(session.name)}</div>

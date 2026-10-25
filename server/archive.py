@@ -26,6 +26,7 @@ from .contracts.session_policy import is_user_message
 from .contracts.models import indexed_message_text
 
 SCRYPT = {'n': 2 ** 15, 'r': 8, 'p': 1}
+KEY_KINDS = ('upload', 'query')   # upload: one computer pushes data; query: read-only history access
 MIN_PASSWORD = 12
 
 
@@ -106,6 +107,9 @@ class CloudArchive:
                     payload_hash TEXT NOT NULL, receipt TEXT NOT NULL, created REAL NOT NULL,
                     PRIMARY KEY(client_id, operation_key));
             ''')
+            columns = {r[1] for r in conn.execute('PRAGMA table_info(cloud_clients)')}
+            if 'kind' not in columns:   # additive upgrade: existing keys are upload keys
+                conn.execute("ALTER TABLE cloud_clients ADD COLUMN kind TEXT NOT NULL DEFAULT 'upload'")
             conn.execute("INSERT OR IGNORE INTO cloud_settings VALUES('content_policy',?)", (POLICY,))
             conn.execute("INSERT OR IGNORE INTO cloud_settings VALUES('instance',?)", (secrets.token_hex(16),))
             conn.execute("INSERT OR IGNORE INTO cloud_settings VALUES('password_version','0')")
@@ -138,26 +142,27 @@ class CloudArchive:
         stored = self.setting('password_hash')
         return stored is not None and verify_password(password, stored)
 
-    # ----- upload API keys (client slots) -----
-    def create_key(self, name, *, expires_days=None):
+    # ----- API keys: upload (client slots) and query (read-only) -----
+    def create_key(self, name, *, expires_days=None, kind='upload'):
+        require(kind in KEY_KINDS, 'Key type must be upload or query', status=400)
         require(isinstance(name, str) and 0 < len(name.strip()) <= 160, 'Key name is required (max 160 characters)', status=400)
         require(expires_days is None or isinstance(expires_days, int) and not isinstance(expires_days, bool) and 1 <= expires_days <= 3650,
                 'Expiry must be 1..3650 days', status=400)
         client = secrets.token_hex(12); key_id = secrets.token_hex(8); secret = secrets.token_urlsafe(32)
         with self.db.transaction() as conn:
-            conn.execute('INSERT INTO cloud_clients(id,name,key_id,key_hash,active,created,expires) VALUES(?,?,?,?,1,?,?)',
+            conn.execute('INSERT INTO cloud_clients(id,name,key_id,key_hash,active,created,expires,kind) VALUES(?,?,?,?,1,?,?,?)',
                          (client, name.strip(), key_id, hashlib.sha256(secret.encode()).hexdigest(), time.time(),
-                          time.time() + expires_days * 86400 if expires_days else 0))
-        return {'clientId': client, 'name': name.strip(), 'key': f'asv_{key_id}_{secret}', 'keyId': f'asv_{key_id}'}
+                          time.time() + expires_days * 86400 if expires_days else 0, kind))
+        return {'clientId': client, 'name': name.strip(), 'kind': kind, 'key': f'asv_{key_id}_{secret}', 'keyId': f'asv_{key_id}'}
 
     def rotate_key(self, client):
         key_id = secrets.token_hex(8); secret = secrets.token_urlsafe(32)
         with self.db.transaction() as conn:
-            row = conn.execute('SELECT name FROM cloud_clients WHERE id=?', (client,)).fetchone()
+            row = conn.execute('SELECT name,kind FROM cloud_clients WHERE id=?', (client,)).fetchone()
             require(row is not None, 'Unknown key', 'NOT_FOUND', 404)
             conn.execute('UPDATE cloud_clients SET key_id=?,key_hash=?,active=1 WHERE id=?',
                          (key_id, hashlib.sha256(secret.encode()).hexdigest(), client))
-        return {'clientId': client, 'name': row[0], 'key': f'asv_{key_id}_{secret}', 'keyId': f'asv_{key_id}'}
+        return {'clientId': client, 'name': row[0], 'kind': row[1], 'key': f'asv_{key_id}_{secret}', 'keyId': f'asv_{key_id}'}
 
     def revoke_key(self, client):
         with self.db.transaction() as conn:
@@ -166,10 +171,10 @@ class CloudArchive:
     def unbind_key(self, client):
         """Explicit owner action: let this slot accept a NEW local dataset. Data is kept."""
         with self.db.transaction() as conn:
-            require(conn.execute('UPDATE cloud_clients SET dataset_id=NULL,ack_seq=0 WHERE id=?', (client,)).rowcount == 1,
-                    'Unknown key', 'NOT_FOUND', 404)
+            require(conn.execute("UPDATE cloud_clients SET dataset_id=NULL,ack_seq=0 WHERE id=? AND kind='upload'", (client,)).rowcount == 1,
+                    'Unknown upload key', 'NOT_FOUND', 404)
 
-    def authenticate(self, key):
+    def authenticate(self, key, kind='upload'):
         parts = key.split('_', 2) if isinstance(key, str) else []
         if len(parts) != 3 or parts[0] != 'asv' or len(parts[1]) != 16:
             raise Problem('UNAUTHORIZED', 'Invalid API key', 401)
@@ -179,19 +184,30 @@ class CloudArchive:
             valid = hmac.compare_digest(hashlib.sha256(parts[2].encode()).hexdigest(), expected)
             if row is None or not valid or not row['active'] or (row['expires'] and row['expires'] < time.time()):
                 raise Problem('UNAUTHORIZED', 'Invalid, revoked or expired API key', 401)
+            if row['kind'] != kind:
+                raise Problem('WRONG_KEY_TYPE', f"This is a {row['kind']} key; use a {kind} key for this API", 403)
             if time.time() - row['last_used'] > 60:
                 conn.execute('UPDATE cloud_clients SET last_used=? WHERE id=?', (time.time(), row['id']))
             return dict(row)
 
     def keys(self):
         with self.db.get_connection() as conn:
-            rows = conn.execute('''SELECT c.id,c.name,c.key_id,c.active,c.created,c.expires,c.last_used,c.dataset_id,
+            rows = conn.execute('''SELECT c.id,c.name,c.kind,c.key_id,c.active,c.created,c.expires,c.last_used,c.dataset_id,
                 c.ack_seq,c.last_upload,c.uploaded_changes,(SELECT COUNT(*) FROM cloud_sessions s WHERE s.client_id=c.id) AS sessions
                 FROM cloud_clients c ORDER BY c.created''').fetchall()
-        return [{'clientId': r['id'], 'name': r['name'], 'keyId': 'asv_' + r['key_id'], 'active': bool(r['active']),
+        return [{'clientId': r['id'], 'name': r['name'], 'kind': r['kind'], 'keyId': 'asv_' + r['key_id'], 'active': bool(r['active']),
                  'created': r['created'], 'expires': r['expires'] or None, 'lastUsed': r['last_used'] or None,
                  'bound': r['dataset_id'] is not None, 'ackSeq': r['ack_seq'], 'lastUpload': r['last_upload'] or None,
                  'uploadedChanges': r['uploaded_changes'], 'sessions': r['sessions']} for r in rows]
+
+    def machines(self):
+        """Upload clients as seen by readers: names and activity only, no key data."""
+        with self.db.get_connection() as conn:
+            rows = conn.execute('''SELECT c.id,c.name,c.active,c.last_upload,
+                (SELECT COUNT(*) FROM cloud_sessions s JOIN sessions x ON x.id=s.id WHERE s.client_id=c.id AND x.message_count>0) AS sessions
+                FROM cloud_clients c WHERE c.kind='upload' ORDER BY c.name,c.created''').fetchall()
+        return [{'id': r['id'], 'name': r['name'], 'active': bool(r['active']), 'sessions': r['sessions'],
+                 'lastUpload': r['last_upload'] or None} for r in rows]
 
     # ----- ingest -----
     def status(self, client, dataset=None):
@@ -356,5 +372,5 @@ class CloudArchive:
             return {}
         with self.db.get_connection() as conn:
             marks = ','.join('?' for _ in ids)
-            return {r[0]: r[1] for r in conn.execute(f'''SELECT s.id,c.name FROM cloud_sessions s
+            return {r[0]: {'id': r[1], 'name': r[2]} for r in conn.execute(f'''SELECT s.id,c.id,c.name FROM cloud_sessions s
                 JOIN cloud_clients c ON c.id=s.client_id WHERE s.id IN ({marks})''', list(ids))}
