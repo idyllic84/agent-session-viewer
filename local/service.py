@@ -51,8 +51,10 @@ class LocalService:
         importer = self._importer
         if status['running'] and importer is not None:
             progress = importer.snapshot()
-            status['progress'] = {'phase': 'syncing', 'filesDone': progress.get('filesDone', 0), 'sessionsDone': 0,
-                                  'skippedRecent': 0, 'source': progress.get('source', ''), 'currentFile': progress.get('file', ''),
+            status['progress'] = {'phase': 'importing', 'filesDone': progress.get('filesDone', 0),
+                                  'added': progress.get('added', 0), 'updated': progress.get('updated', 0),
+                                  'skippedRecent': progress.get('skippedRecent', 0), 'failed': progress.get('failed', 0),
+                                  'source': progress.get('source', ''), 'currentFile': progress.get('file', ''),
                                   'step': progress.get('step', '')}
             status['elapsedSeconds'] = round(time.monotonic() - status.pop('_started', time.monotonic()), 1)
         status.pop('_started', None)
@@ -108,13 +110,15 @@ class LocalService:
     # ----- cloud connection -----
     def cloud_status(self):
         connection = self.archive.connection()
-        value = {'configured': connection is not None, 'upload': self.uploader.status(), 'local': self.archive.stats()}
+        value = {'configured': connection is not None, 'upload': self.uploader.status(), 'local': self.archive.stats(),
+                 'sources': self.get_sources(), 'import': self.import_status()}
         if connection:
             value['connection'] = {'url': connection['url'], 'keyHint': connection['key_hint'],
                                    'keyStorage': self.credentials.describe(connection['key_ref']),
                                    'clientName': connection['client_name'], 'ackedSeq': connection['acked_seq'],
                                    'pending': connection['pending'], 'lastResult': connection['last_result']}
             value['pendingChanges'] = max(0, value['local']['lastSeq'] - connection['acked_seq'])
+            value['pending'] = self.archive.pending_summary(connection['acked_seq'])
         return value
 
     def _probe(self, url, key):

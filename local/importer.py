@@ -129,7 +129,7 @@ class Importer:
         self.query_files = min(progress_query_files, repository.caps['maxProgressFiles'])
         self.batch_bytes = min(batch_bytes, repository.caps['maxRequestBytes'])
         self.progress = {}; self.progress_lock = Lock(); self.stop = stop or Event(); self.log = log
-        self.counts = {'filesDone': 0}
+        self.counts = {'filesDone': 0}; self.started_run = time.monotonic()
 
     def recent(self, entry):
         return self.quiet_seconds > 0 and time.time_ns() - max(p.stat().st_mtime_ns for p in (entry.path, *entry.dependencies)) < self.quiet_seconds * 1e9
@@ -152,7 +152,10 @@ class Importer:
 
         def log_step():
             while not stop.wait(5):
-                self.log('[import] working ' + json.dumps(self.snapshot(), ensure_ascii=False))
+                p = self.snapshot()
+                self.log(f"[import] {time.monotonic() - self.started_run:.0f}s · {p.get('filesDone', 0)} files checked · "
+                         f"{p.get('added', 0)} new · {p.get('updated', 0)} updated · {p.get('skippedRecent', 0)} deferred · "
+                         f"{p.get('failed', 0)} failed · now: {p.get('source', '')} {p.get('file', '')} ({p.get('step', '')})")
         thread = Thread(target=log_step, daemon=True, name='import-progress-log'); thread.start()
         try:
             yield
@@ -269,7 +272,7 @@ class Importer:
     def run(self, sources=None):
         self.repository.reset_run()
         result = {key: 0 for key in ('initialized', 'incremental', 'unchanged', 'skippedRecent', 'skippedSubagents', 'failed')}
-        result['errors'] = []; seen = []; completed = []; started_run = time.monotonic()
+        result['errors'] = []; seen = []; completed = []; started_run = self.started_run = time.monotonic()
         self.log(f'[import] start: sequential files; quiet-period={self.quiet_seconds:g}s')
         try:
             with self.working_log():
@@ -280,7 +283,8 @@ class Importer:
                     try:
                         for entry in self.entries(adapter):
                             self.control_point(); path = str(entry.path); seen.append(path); started = time.monotonic(); outcome = 'failed'
-                            self.set_progress(source=adapter.source, file=entry.path.name, step='stat/recent-check')
+                            self.set_progress(source=adapter.source, file=entry.path.name, step='stat/recent-check',
+                                              elapsed=time.monotonic() - started_run)
                             try:
                                 if is_subagent(adapter.source, entry.path):
                                     outcome = 'skippedSubagents'; result[outcome] += 1
@@ -315,7 +319,9 @@ class Importer:
                                 result['errors'].append({'source': adapter.source, 'path': path, 'code': type(exc).__name__, 'error': str(exc)})
                             finally:
                                 self.repository.release_file(); self.counts['filesDone'] += 1
-                                self.set_progress(filesDone=self.counts['filesDone'])
+                                self.set_progress(filesDone=self.counts['filesDone'], added=result['initialized'], updated=result['incremental'],
+                                                  unchanged=result['unchanged'], skippedRecent=result['skippedRecent'], failed=result['failed'],
+                                                  elapsed=time.monotonic() - started_run)
                                 if outcome not in ('unchanged',):
                                     self.log(f'[import] {outcome} / {adapter.source} / {entry.path.name} ({time.monotonic()-started:.2f}s)')
                     except OSError as exc:
@@ -330,5 +336,9 @@ class Importer:
         finally:
             self.repository.reset_run()
         result['elapsedSeconds'] = round(time.monotonic() - started_run, 1)
-        self.log('[import] complete: ' + json.dumps({k: v for k, v in result.items() if k != 'errors'}))
+        self.log(f"[import] complete in {result['elapsedSeconds']:.0f}s: {result['initialized']} new, {result['incremental']} updated, "
+                 f"{result['unchanged']} unchanged, {result['skippedRecent']} deferred (modified within the quiet period), "
+                 f"{result['skippedSubagents']} subagent files skipped, {result['failed']} failed")
+        for error in result['errors'][:20]:
+            self.log(f"[import]   failed: {error['source']} {error.get('path', '')}: {error.get('code')} {error.get('error', '')}")
         return result

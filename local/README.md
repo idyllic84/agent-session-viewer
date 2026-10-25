@@ -28,15 +28,24 @@ python -m local
 |---|---|
 | `--port 8000` | 本地端口 |
 | `--database PATH` | 指定本地分析库（不能是旧的 `viewer.db` / `claude.db`） |
-| `--roots-file roots.json` | 只导入这些目录：`{"claude": ["..."], "pi": ["..."]}` |
+| `--roots-file roots.json` | 可选：**覆盖**自动扫描的目录（历史在非默认位置或只想导入部分来源时），如 `{"claude": ["..."], "pi": ["..."]}` |
 | `--include-recent` | 不推迟一小时内修改过的文件 |
 | `--quiet-seconds N` | 调整推迟窗口（默认 3600） |
 | `--no-import` | 仅浏览，跳过启动导入 |
 | `--credential-store auto\|keyring\|file` | API Key 存储位置 |
 
-默认来源目录：`~/.claude/projects`、`$CODEX_HOME/sessions`、`~/.copilot/session-state`、
-`~/.pi/agent/sessions`、VS Code（含 Insiders）的 `User` 目录；也可用环境变量
-`VIEWER_SOURCE_ROOTS` 指定。
+**来源目录无需配置，启动时自动扫描**各 Agent 的标准位置：
+
+| 来源 | 自动扫描的目录 |
+|---|---|
+| Claude Code | `~/.claude/projects` |
+| Codex | `$CODEX_HOME/sessions`、`$CODEX_HOME/archived_sessions`（默认 `~/.codex`） |
+| Copilot CLI | `~/.copilot/session-state` |
+| pi | `$PI_CODING_AGENT_SESSION_DIR`（默认 `~/.pi/agent/sessions`） |
+| VS Code Chat | VS Code 与 Insiders 的 `User` 目录（Windows 为 `%APPDATA%\Code\User`） |
+
+本地控制台的 Local store 区域会列出每个来源是否找到（鼠标悬停显示具体目录）。只有历史放在
+非标准位置时，才需要 `--roots-file` 或环境变量 `VIEWER_SOURCE_ROOTS` 覆盖。
 
 Windows 后台无窗口启动示例（PowerShell，日志写入已忽略的 `local/state/`）：
 
@@ -52,7 +61,7 @@ Start-Process -WindowStyle Hidden -FilePath python -ArgumentList '-u','-m','loca
   记录与分支，因此没有“原始记录”和分支选择。
 - **Reload**：显式重新增量导入一次（不会常驻）。
 - **Cloud sync console**：
-  - 使用云端控制台生成的 **Upload** 类型 Key（Query 类型 Key 只能读，不能上传）。Key 的名称
+  - 使用云端控制台生成的 **Upload** 类型 Key（Agent 类型 Key 只能读，不能上传）。Key 的名称
     就是这台电脑在云端页面上显示的机器名。
   - 填写云端地址（`https://…`；仅 `http://localhost` / `127.0.0.1` 可用 HTTP）和云端
     控制台生成的 API Key。
@@ -60,7 +69,12 @@ Start-Process -WindowStyle Hidden -FilePath python -ArgumentList '-u','-m','loca
   - **Save** 先验证再保存；Key 之后不再显示，只显示 Key ID。
   - **Sync to cloud** 上传自上次云端确认后的变更；**Pause / Cancel** 在批次边界生效，
     **Resume** 继续同一高水位。
+  - 显示：等待上传的**会话数/消息数**、上传进度条（百分比、已传变更、批次、数据量、预计剩余时间）、
+    上次同步结果与时间（“3 min ago”），以及常见错误的处理建议（如 Key 被撤销、云端不可达）。
+    标题栏摘要显示“N sessions waiting / uploading 42% / up to date”。
   - 页面只在上传运行时轮询本机状态；本地服务不会轮询云端。
+- **启动和 Reload 的导入进度**：终端每 5 秒输出一行可读进度（已检查文件数、新增、更新、推迟、失败、
+  当前文件），结束时输出汇总及失败文件列表；页面 Reload 时状态栏显示同样的计数。
 
 ## 安全
 

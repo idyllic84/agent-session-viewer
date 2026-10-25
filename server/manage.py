@@ -3,7 +3,7 @@
     python -m server.manage init-session-key --directory server/state
     python -m server.manage set-password --database server/state/cloud.db   # prompts, or --stdin
     python -m server.manage create-key --database server/state/cloud.db --name "work laptop"
-    python -m server.manage create-key --database server/state/cloud.db --name "analysis" --kind query
+    python -m server.manage create-key --database server/state/cloud.db --name "analysis agent" --kind agent
 
 Secrets are read from a prompt/stdin and are never echoed or logged, except a
 newly generated API key, which is printed exactly once for you to copy.
@@ -42,10 +42,10 @@ def main(argv=None):
     keys = sub.add_parser('init-session-key'); keys.add_argument('--directory', default=str(Path(__file__).with_name('state')))
     password = sub.add_parser('set-password', help='Set/reset the owner password (signs out all browsers)')
     password.add_argument('--database', required=True); password.add_argument('--stdin', action='store_true')
-    create = sub.add_parser('create-key', help='Generate an upload key (one computer) or a read-only query key')
+    create = sub.add_parser('create-key', help='Generate an upload key (one computer) or a read-only agent key')
     create.add_argument('--database', required=True); create.add_argument('--name', required=True)
     create.add_argument('--expires-days', type=int)
-    create.add_argument('--kind', choices=('upload', 'query'), default='upload')
+    create.add_argument('--kind', choices=('upload', 'agent'), default='upload')
     args = parser.parse_args(argv)
     if args.command == 'init-session-key':
         init_session_key(args.directory)

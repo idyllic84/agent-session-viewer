@@ -199,6 +199,32 @@ class LocalAppTests(unittest.TestCase):
         self.assertEqual(self.service.uploader.run_now()['error']['code'], 'DATASET_MISMATCH')
         self.assertEqual(self.post('/api/cloud/connection', {'url': 'https://cloud.example', 'key': KEY}, method='PUT').status_code, 409)
 
+    def test_console_reports_pending_work_in_sessions_and_messages_and_run_progress(self):
+        state = self.client.get('/api/cloud', base_url='http://localhost:8000').json
+        self.assertEqual({s['id'] for s in state['sources']}, {'claude'})
+        self.assertTrue(state['sources'][0]['available'])
+        self.assertEqual(state['import']['result']['added'], 1)
+        self.connect()
+        state = self.client.get('/api/cloud', base_url='http://localhost:8000').json
+        self.assertEqual(state['pending'], {'changes': 2, 'sessions': 1, 'messages': 1})
+        upload = self.service.uploader.run_now()
+        self.assertEqual((upload['fromSeq'], upload['ackSeq'], upload['highWater']), (0, 2, 2))
+        state = self.client.get('/api/cloud', base_url='http://localhost:8000').json
+        self.assertEqual(state['pending'], {'changes': 0, 'sessions': 0, 'messages': 0})
+        self.assertEqual(state['connection']['lastResult']['state'], 'complete')
+
+    def test_import_progress_counts_are_live_and_logs_are_readable(self):
+        from local.importer import Importer, LocalRepository
+        from local.sources.claude import ClaudeAdapter as Adapter
+        (self.source / 'new.jsonl').write_text(json.dumps({'type': 'user', 'sessionId': 'new', 'timestamp': TS, 'message': {'content': 'x'}}) + chr(10))
+        lines = []
+        importer = Importer(LocalRepository(self.service.archive), [Adapter([self.source])], quiet_seconds=0, log=lines.append)
+        importer.run()
+        progress = importer.snapshot()
+        self.assertEqual((progress['filesDone'], progress['added'], progress['unchanged'], progress['failed']), (2, 1, 1, 0))
+        self.assertTrue(any(line.startswith('[import] complete in') and '1 new' in line and '1 unchanged' in line for line in lines), lines)
+        self.assertFalse(any(line.lstrip().startswith('{') or ' {"' in line for line in lines), 'no raw JSON progress dumps')
+
     def test_analysis_view_has_no_raw_records_or_branches(self):
         sid = 'claude:c'
         self.assertEqual(self.client.get(f'/api/sessions/{sid}/records', base_url='http://localhost:8000').status_code, 410)

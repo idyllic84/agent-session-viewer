@@ -6,6 +6,7 @@ The cloud never commands a local computer: there is no task queue, polling
 or heartbeat. Local servers push ordinary batch POSTs with an upload API key.
 """
 import argparse
+import base64
 from datetime import timedelta
 import html
 import hmac
@@ -65,14 +66,14 @@ def create_app(archive, *, session_secret, public_origin, allow_http=False):
             require(header.startswith('Bearer '), 'Upload API key required', 'UNAUTHORIZED', 401)
             request.client = archive.authenticate(header[7:].strip(), 'upload')
             return
-        if request.path.startswith('/query/v1/'):
-            # Read-only history API: a query API key, or the signed-in owner.
-            require(request.method in ('GET', 'HEAD'), 'The query API is read-only', 'METHOD_NOT_ALLOWED', 405)
+        if request.path.startswith('/agent/v1/'):
+            # Read-only analysis API: an agent API key, or the signed-in owner.
+            require(request.method in ('GET', 'HEAD'), 'The agent API is read-only', 'METHOD_NOT_ALLOWED', 405)
             header = request.headers.get('Authorization', '')
             if header.startswith('Bearer '):
-                request.reader = archive.authenticate(header[7:].strip(), 'query')
+                request.reader = archive.authenticate(header[7:].strip(), 'agent')
                 return
-            require(owner(), 'Query API key or owner login required', 'UNAUTHORIZED', 401)
+            require(owner(), 'Agent API key or owner login required', 'UNAUTHORIZED', 401)
             return
         if request.path in ('/auth/login', '/login.css'):
             if request.method == 'POST':
@@ -227,11 +228,19 @@ def create_app(archive, *, session_secret, public_origin, allow_http=False):
             item['machine'] = machine; item['uploadedBy'] = machine['name'] if machine else None
         return items
 
+    def millis(name):
+        value = request.args.get(name) or None
+        if value is None:
+            return None
+        require(value.isdigit(), f'{name} must be epoch milliseconds', status=400)
+        return int(value)
+
     def history_page():
         offset, limit = page(100, 500)
         items, total = archive.db.list_sessions(source=request.args.get('source') or None, project=request.args.get('project') or None,
                                                 query=request.args.get('q', '').strip(), offset=offset, limit=limit,
-                                                client=request.args.get('machine') or None)
+                                                client=request.args.get('machine') or None,
+                                                modified_from=millis('from'), modified_to=millis('to'))
         return jsonify(items=with_machines(items), total=total, nextCursor=offset + len(items) if offset + len(items) < total else None)
 
     def history_messages(sid):
@@ -270,30 +279,39 @@ def create_app(archive, *, session_secret, public_origin, allow_http=False):
     def legacy_status():
         return jsonify(running=False, result=None)
 
-    # ----- read-only query API (query API key or owner session) -----
-    @app.get('/query/v1/machines')
-    def query_machines():
-        return jsonify(items=archive.machines())
+    # ----- agent API (agent API key or owner session): list, metadata, paged messages -----
+    def bounded(name, default, maximum):
+        value = int(request.args.get(name, default))
+        require(1 <= value <= maximum, f'{name} must be between 1 and {maximum}', status=400)
+        return value
 
-    @app.get('/query/v1/sources')
-    def query_sources():
-        return jsonify(items=[{'id': key, 'label': label} for key, label in SOURCES.items()])
+    @app.get('/agent/v1/sessions')
+    def agent_sessions():
+        cursor = request.args.get('cursor') or None
+        after = None
+        if cursor:
+            try:
+                after = base64.b64decode(cursor + '=' * (-len(cursor) % 4), altchars=b'-_', validate=True).decode('utf-8')
+                require(after, 'Invalid cursor', 'INVALID_CURSOR', 400)
+            except (ValueError, UnicodeDecodeError):
+                raise Problem('INVALID_CURSOR', 'Invalid cursor', 400) from None
+        items, total, last = archive.agent_sessions(after, bounded('limit', 100, 500))
+        token = base64.urlsafe_b64encode(last.encode('utf-8')).decode().rstrip('=') if last else None
+        return jsonify(items=items, total=total, nextCursor=token)
 
-    @app.get('/query/v1/sessions')
-    def query_sessions():
-        return history_page()
+    @app.get('/agent/v1/sessions/<path:sid>/messages')
+    def agent_messages(sid):
+        offset = int(request.args.get('cursor', '0'))
+        require(offset >= 0, 'Invalid cursor', 'INVALID_CURSOR', 400)
+        revision = request.args.get('revision')
+        return jsonify(archive.agent_messages(sid, offset, bounded('limit', 500, 2000), int(revision) if revision is not None else None))
 
-    @app.get('/query/v1/sessions/<path:sid>/messages')
-    def query_messages(sid):
-        return history_messages(sid)
-
-    @app.get('/query/v1/sessions/<path:sid>')
-    def query_session(sid):
-        session_value = archive.db.get_session(sid)
-        if session_value is None:
+    @app.get('/agent/v1/sessions/<path:sid>')
+    def agent_session(sid):
+        value = archive.agent_session(sid)
+        if value is None:
             raise Problem('NOT_FOUND', 'Unknown session', 404)
-        session_value['sessionRevision'] = archive.session_revision(sid)
-        return jsonify(with_machines([session_value])[0])
+        return jsonify(session=value)
 
     # ----- ingest (upload API key) -----
     @app.get('/ingest/v1/status')

@@ -1,7 +1,7 @@
 # 云端 Web Server
 
-接收本地 Web Server 上传的分析数据，提供密码保护的查看页与控制台（上传/查询 API Key、
-密码），以及只读的历史查询 API。页面和查询结果都标明每个会话来自哪台机器。云端从不向本地电脑下发任务。主说明见 [根目录 README](../README.md)，
+接收本地 Web Server 上传的分析数据，提供密码保护的查看页与控制台（上传/Agent API Key、
+密码），以及供分析 agent 使用的只读 Agent API。页面和查询结果都标明每个会话来自哪台机器。云端从不向本地电脑下发任务。主说明见 [根目录 README](../README.md)，
 设计见 [docs/two-web-servers-design.md](../docs/two-web-servers-design.md)。
 
 ## 部署
@@ -29,18 +29,19 @@ python -m server --database server/state/cloud.db --session-key-file server/stat
 
 | 对象 | 凭据 | 能做什么 |
 |---|---|---|
-| 浏览器（Owner） | 密码 → 8 小时 Cookie 会话（HttpOnly、SameSite=Strict、HTTPS 下 Secure） | 查看、检索、管理 Key、改密码；也可调用 `/query/v1/*` |
-| 本地 Web Server | **上传** API Key（`Authorization: Bearer asv_<id>_<secret>`） | 仅 `/ingest/v1/*`：绑定/上传自己的数据集 |
-| 脚本 / 分析程序 | **查询** API Key（同样的 Bearer 格式） | 仅 `/query/v1/*` 的 GET：只读查询全部历史 |
+| 浏览器（Owner） | 密码 → 8 小时 Cookie 会话（HttpOnly、SameSite=Strict、HTTPS 下 Secure） | 查看、检索、管理 Key、改密码；也可调用 `/agent/v1/*` |
+| 本地 Web Server | **Upload** API Key（`Authorization: Bearer asv_<id>_<secret>`） | 仅 `/ingest/v1/*`：绑定/上传自己的数据集 |
+| 分析 agent | **Agent** API Key（同样的 Bearer 格式） | 仅 `/agent/v1/*` 的 GET：只读 |
 
-Key 类型在控制台生成时选择，之后不能互换：上传 Key 访问查询 API、查询 Key 访问上传 API
+Key 类型在控制台生成时选择，之后不能互换：Upload Key 访问 Agent API、Agent Key 访问上传 API
 都返回 403 `WRONG_KEY_TYPE`。两类 Key 都不能登录控制台、管理 Key 或使用页面的 `/api/*`。
 
 - 密码以 scrypt 加盐哈希保存；修改/重置密码会使所有已有会话失效。登录有限流与表单 nonce。
 - 写操作校验 Origin、`Sec-Fetch-Site` 和 CSRF token。
 - API Key 只显示一次，库中只存 SHA-256；可设置过期、轮换（保留上传进度）、撤销。
-- API Key 不能登录控制台，浏览器 Cookie 不能调用 ingest（但可以调用只读的 `/query/v1/*`）。
-- 查询 Key 可读取**全部**机器的历史（单 Owner 模型），不绑定数据集，也不会出现在机器列表中。
+- API Key 不能登录控制台，浏览器 Cookie 不能调用 ingest（但可以调用只读的 `/agent/v1/*`）。
+- Agent Key 可读取**全部**机器的历史（单 Owner 模型），不绑定数据集，也不会出现在机器列表中。
+- 云端不提供删除历史的功能；撤销 Key 只是停止该 Key 的访问，数据保留。
 - 每个 Key 是一个“客户端槽位”，首次同步绑定到一台电脑的本地数据集；同一 Key 不能
   被另一台电脑复用（`DATASET_MISMATCH`），除非 Owner 在控制台显式“Allow a new computer”。
 
@@ -55,7 +56,7 @@ Key 类型在控制台生成时选择，之后不能互换：上传 Key 访问�
 | 字段 | 说明 |
 |---|---|
 | `clientId` | 云端内部 ID，轮换 Key 时不变 |
-| 名称 | 例如 “work laptop”，即页面与查询 API 中的**机器名** |
+| 名称 | 例如 “work laptop”，即页面与 Agent API 中的**机器名** |
 | Key ID + 秘密哈希 | Key 形如 `asv_<keyId>_<secret>`，只存 secret 的 SHA-256 |
 | `dataset_id` | 首次同步时绑定的本地数据集 |
 | `ack_seq` | 该客户端已被云端确认的变更序列 |
@@ -92,33 +93,69 @@ Key 类型在控制台生成时选择，之后不能互换：上传 Key 访问�
 ### 页面上的机器区分
 
 - 会话列表每一项显示机器名徽标；打开会话后标题为“会话名 · 机器名”。
-- 筛选栏有 **Machine** 下拉框（含各机器会话数，已撤销的 Key 标注 revoked），可与来源、项目、
-  全文搜索组合。
+- 筛选栏有 **Machine** 下拉框（含各机器会话数，已撤销的 Key 标注 revoked）；列表上方的机器
+  标签显示每台机器的会话数和最后上传时间，超过 7 天未上传的标 ⚠，点击可只看该机器。
+- **Updated** 日期范围（含今天/7/30/90 天快捷项）按会话最后更新时间筛选；可与机器、来源、
+  项目、全文搜索组合。
+- 打开的会话会写入地址栏（`#session=<id>`），刷新或分享链接会直接打开该会话。
+- 消息详情显示类型、时间、时间来源、调用 ID 和结果状态；时间取自文件修改时间时会注明。
 - 控制台 Key 列表显示每把上传 Key 的会话数、变更数和最后上传时间。
 
 机器名就是上传 Key 的名称，建议生成 Key 时用易识别的电脑名。
 
-## 查询 API（只读）
+## Agent API（只读）
 
-在控制台生成类型为 **Query** 的 Key，或使用已登录的 Owner 浏览器会话：
+供分析 agent 读取历史：列出全部会话、查看指定会话的 metadata、分页读取历史消息。
+在控制台生成类型为 **Agent** 的 Key；已登录的 Owner 浏览器会话也能调用。只允许 GET/HEAD。
 
 ```text
-GET /query/v1/machines                              → 机器列表：id、名称、会话数、最后上传
-GET /query/v1/sources                               → 五种来源
-GET /query/v1/sessions?q=&source=&project=&machine=&cursor=&limit=
-                                                    → 会话列表/全文搜索（limit ≤ 500）
-GET /query/v1/sessions/{sessionId}                  → 会话详情
-GET /query/v1/sessions/{sessionId}/messages?cursor=&limit=&revision=
-                                                    → 消息分页（limit ≤ 2000）
+GET /agent/v1/sessions?cursor=&limit=                       全部会话（按 id 排序；limit 1..500，默认 100）
+GET /agent/v1/sessions/{sessionId}                          指定会话的 metadata
+GET /agent/v1/sessions/{sessionId}/messages?cursor=&limit=&revision=
+                                                            分页消息（limit 1..2000，默认 500）
 ```
 
-- `machine` 参数为 `/query/v1/machines` 返回的 `id`；每个会话都带 `machine: {id, name}`。
-- `sessionId` 形如 `<datasetId>/claude:xxx`，放入 URL 时建议整体做 URL 编码（如 `encodeURIComponent`）。
-- 分页时把第一页返回的 `sessionRevision` 作为 `revision` 传入；会话中途被更新会返回 409。
-- 只允许 GET/HEAD；内容口径与页面一致（四类分析消息），不含原始记录。
+**会话列表**
+
+```json
+{"items": [{"id": "<datasetId>/claude:3db0b348-…", "machine": {"id": "…", "name": "work laptop"},
+            "source": "claude", "externalId": "3db0b348-…", "project": "D:\\Zero", "name": "…",
+            "messageCount": 378, "userMessageCount": 38, "lastModified": 1792717323000,
+            "available": true, "revision": 12}],
+ "total": 451, "nextCursor": "ZDI…"}
+```
+
+- 包含所有有消息的会话（不含 subagent 会话），按会话 ID 升序。
+- `nextCursor` 是不透明字符串，原样传回即可；为 `null` 表示已到末尾。游标基于会话 ID，
+  翻页期间有新上传也不会重复或遗漏已存在的会话。
+- `lastModified` 为毫秒时间戳；`revision` 每次该会话有新内容上传时加 1，可用来判断是否需要重新分析。
+
+**会话 metadata**：`{"session": {…上面的字段…, "metadata": {…}}}`。`metadata` 为白名单字段，
+如 `models`、`providers`、`repository`、`createdAt`、`claudeTitle`、`latestUsageRecord` 等（视来源而定）。
+
+**消息分页**
+
+```json
+{"sessionId": "…", "revision": 12, "total": 378, "nextCursor": "500",
+ "items": [{"id": "…", "order": 0, "type": "user", "role": "user", "timestamp": 1792717323000,
+            "timestampSource": "source", "content": [{"type": "text", "text": "…"}]},
+           {"id": "…", "order": 5, "type": "tool-use", "role": "assistant", "timestamp": …, "timestampSource": "source",
+            "toolCallId": "call_1", "content": [{"type": "tool_use", "id": "call_1", "name": "Bash", "input": {"command": "…"}}]},
+           {"id": "…", "order": 6, "type": "tool-result", "role": "tool", "timestamp": …, "timestampSource": "source",
+            "toolCallId": "call_1", "status": "failure",
+            "content": [{"type": "tool_result", "tool_use_id": "call_1", "success": false, "content": "failure"}]}]}
+```
+
+- `type` 只有 `user`、`assistant`、`tool-use`、`tool-result` 四种；结果只有 success/failure/unknown。
+- `timestampSource`：`source`（原始事件时间）、`request` / `session`（请求或会话时间）、`file_mtime`（来源缺失时间，取文件修改时间）。
+- 翻页时把第一页的 `revision` 作为 `revision` 参数传入；会话在翻页中途有新上传会返回 409
+  `SESSION_CHANGED`，此时从 `cursor=0` 重新读取。
+- `sessionId` 放进 URL 前请整体 URL 编码（如 `encodeURIComponent`）。
 
 ```bash
-curl -H "Authorization: Bearer $ASV_QUERY_KEY" "https://history.example.com/query/v1/sessions?q=STT&limit=20"
+curl -H "Authorization: Bearer $ASV_AGENT_KEY" "https://history.example.com/agent/v1/sessions?limit=200"
+curl -H "Authorization: Bearer $ASV_AGENT_KEY" \
+  "https://history.example.com/agent/v1/sessions/$(python -c 'import urllib.parse,sys;print(urllib.parse.quote(sys.argv[1],safe=""))' "$SID")/messages?limit=500"
 ```
 
 ## Ingest 协议（v6）
@@ -151,7 +188,7 @@ GET  /ingest/v1/receipts/{key}        → 查询回执
 
 ```bash
 python -m server.manage set-password --database PATH [--stdin]   # 设置/重置密码
-python -m server.manage create-key --database PATH --name NAME [--kind upload|query]   # 生成 Key（打印一次）
+python -m server.manage create-key --database PATH --name NAME [--kind upload|agent]   # 生成 Key（打印一次）
 python -m server.manage init-session-key --directory DIR
 ```
 

@@ -17,6 +17,10 @@
             <div class="filter-bar" id="sessionFilterBar">
                 <label class="filter-label" for="machineSelect">Machine:</label>
                 <select id="machineSelect"><option value="">All machines</option></select>
+                <label class="filter-label" for="dateFrom">Updated:</label>
+                <span class="date-range"><input type="date" id="dateFrom" aria-label="Updated from"> – <input type="date" id="dateTo" aria-label="Updated until">
+                    <select id="datePreset" aria-label="Quick date range"><option value="">Any time</option><option value="1">Today</option>
+                    <option value="7">Last 7 days</option><option value="30">Last 30 days</option><option value="90">Last 90 days</option></select></span>
                 <label class="filter-label" for="sourceSelect">Source:</label>
                 <select id="sourceSelect"><option value="">All sources</option></select>
                 <label class="filter-label" for="projectSelect">Project:</label>
@@ -28,6 +32,7 @@
                     <button id="clearSessionSearchBtn" class="clear-btn" title="Clear search">×</button>
                 </div>
             </div>
+            <div class="machine-summary" id="machineSummary" aria-live="polite"></div>
             <div class="sync-status" id="sessionSearchStatus" role="status" aria-live="polite"></div>
             <button id="resetSearchScopeBtn" class="scope-reset" hidden>Search all sources/projects</button>
             <div class="sync-status" id="syncStatus" role="status">Local history only. Click Reload to import.</div>

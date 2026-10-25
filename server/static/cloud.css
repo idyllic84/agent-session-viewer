@@ -9,7 +9,14 @@ body > details { flex: none; max-height: 48vh; overflow: auto; padding: 6px 12px
 .hint { opacity: .8; margin: 0 0 6px; }
 #keyList > div { margin: 6px 0; padding: 6px 0; border-bottom: 1px solid var(--border-color, #ddd); overflow-wrap: anywhere; }
 #machineSelect { max-width: 14em; }
+.date-range { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 4px; }
+.date-range input[type=date], .date-range select { max-width: 9.5em; color-scheme: dark; background: var(--bg-primary, #1e1e1e); color: inherit; border: 1px solid var(--border-color, #3e3e42); border-radius: 3px; padding: 2px 4px; }
+.machine-summary { display: flex; flex-wrap: wrap; gap: 4px; padding: 4px 8px; }
+.machine-chip { font-size: 11px; padding: 2px 8px; border-radius: 10px; border: 1px solid var(--border-color, #3e3e42); background: var(--bg-tertiary, #2d2d30); color: inherit; cursor: pointer; }
+.machine-chip.selected { border-color: currentColor; font-weight: 600; }
+.machine-chip.stale { border-style: dashed; opacity: .8; }
+.machine-chip.stale::after { content: ' ⚠'; }
 .machine-badge { font-size: 11px; padding: 1px 6px; border-radius: 8px; background: var(--border-color, #ddd); margin-left: 4px; overflow-wrap: anywhere; }
 #newKey { white-space: pre-wrap; overflow-wrap: anywhere; user-select: all; }
 /* Analysis-only cloud data has neither original-event replay nor saved branches. */
-#branchSelect, button[data-action="raw"] { display: none !important; }
+#branchSelect { display: none !important; }

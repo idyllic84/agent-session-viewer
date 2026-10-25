@@ -77,7 +77,7 @@ try {
             if (await evaluate(expression)) return;
             await delay(100);
         }
-        const state = await evaluate(`(async () => JSON.stringify({upload: document.getElementById('uploadState')?.textContent, summary: document.getElementById('consoleSummary')?.textContent, message: document.getElementById('consoleMessage')?.textContent, cloud: await fetch('/api/cloud').then(r => r.json()).then(v => ({upload: v.upload, pending: v.pendingChanges, local: v.local?.lastSeq, acked: v.connection?.ackedSeq}))}))()`);
+        const state = await evaluate(`(async () => JSON.stringify({status: document.getElementById('syncStatus')?.textContent, upload: document.getElementById('uploadState')?.textContent, summary: document.getElementById('consoleSummary')?.textContent, message: document.getElementById('consoleMessage')?.textContent, cloud: await fetch('/api/cloud').then(r => r.json()).then(v => ({upload: v.upload, pending: v.pendingChanges, local: v.local?.lastSeq, acked: v.connection?.ackedSeq}))}))()`);
         throw new Error(`Browser condition not reached: ${expression}; console: ${state}`);
     };
     await command('Runtime.enable');
@@ -92,7 +92,7 @@ try {
     await evaluate('document.querySelectorAll(".message-item")[1].click()');
     await waitFor('document.querySelectorAll("#messageDetails .content-block").length === 1');
     assert.ok(!await evaluate('document.getElementById("messageDetails").textContent.includes("synthetic reasoning")'), 'thinking is not stored');
-    assert.equal(await evaluate('getComputedStyle(document.querySelector("#messageDetails button[data-action=raw]")).display'), 'none');
+    assert.equal(await evaluate('document.querySelectorAll("#messageDetails button[data-action=raw]").length'), 0, 'no original-record replay');
     await evaluate('document.getElementById("loadMoreBtn").click()');
     await waitFor('document.querySelectorAll(".message-item").length === 2008');
     assert.equal(await evaluate('document.getElementById("loadedCount").textContent'), '2008 / 2008 loaded');
@@ -119,12 +119,14 @@ try {
     assert.ok(await evaluate('document.getElementById("sessionSearchStatus").textContent.includes("1 sessions")'));
     assert.equal(await evaluate('document.querySelectorAll(".session-item[data-session-id*=empty], .session-item[data-session-id*=agent-child]").length'), 0);
     await evaluate('document.getElementById("reloadBtn").click()');
-    await waitFor('/0 added · 0 updated · [0-9]+ unchanged .* 0 failed/.test(document.getElementById("syncStatus").textContent)');
+    await waitFor('/0 added · 0 updated · [0-9]+ unchanged .* 0 failed/.test(document.getElementById("syncStatus").textContent)', 600);
     // Cloud console: no login locally; address + key entered by the user; upload only on click.
     const cloudOrigin = fs.readFileSync(path.join(root, 'cloud-origin.txt'), 'utf8').trim();
     const cloudKey = fs.readFileSync(path.join(root, 'cloud-key.txt'), 'utf8').trim();
     await evaluate('document.getElementById("cloudConsole").open = true');
     await waitFor('document.getElementById("cloudConnection").textContent.includes("not configured")');
+    assert.ok(await evaluate('document.getElementById("localSources").textContent.includes("✓ pi: found")'), 'auto-detected sources are listed');
+    assert.ok(await evaluate('document.getElementById("localStats").textContent.includes("sessions ·")'));
     const forged = await evaluate(`fetch('/api/cloud/upload/start',{method:'POST'}).then(r=>r.status)`);
     assert.equal(forged, 403, 'mutations without the page CSRF token are refused');
     await evaluate(`document.getElementById("cloudUrl").value=${JSON.stringify(cloudOrigin)}; document.getElementById("cloudKey").value=${JSON.stringify(cloudKey)}; document.getElementById("cloudTest").click()`);
@@ -134,9 +136,12 @@ try {
     assert.equal(await evaluate('document.getElementById("cloudKey").value'), '');
     assert.ok(!await evaluate(`document.body.textContent.includes(${JSON.stringify(cloudKey)})`), 'key is never displayed again');
     await waitFor('!document.getElementById("uploadStart").disabled');
+    assert.ok(await evaluate('/Waiting to upload: [0-9,]+ sessions/.test(document.getElementById("cloudConnection").textContent)'));
+    assert.ok(await evaluate('document.getElementById("cloudConnection").textContent.includes("appears in the cloud as: browser fixture")'));
     await evaluate('document.getElementById("uploadStart").click()');
     // A real upload of ~2000 synthetic messages; allow for a slow/loaded machine.
     await waitFor('document.getElementById("uploadState").textContent.includes("complete") && document.getElementById("consoleSummary").textContent.includes("up to date")', 900);
+    assert.ok(await evaluate('/Last sync: succeeded/.test(document.getElementById("cloudConnection").textContent)'));
     assert.deepEqual(runtimeErrors, []);
     console.log('Real browser smoke test passed: local viewer (analysis only), inline references, live search, user counts, hidden empty/subagent sessions, pagination, XSS escaping, explicit re-import, console connect/test/save/upload with CSRF.');
 } finally {

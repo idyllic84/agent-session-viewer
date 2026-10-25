@@ -120,16 +120,25 @@ def run(origin, password_file, *, restart_project=None):
             assert 'Allowed synthetic task' in json.dumps(messages) and marker not in json.dumps(messages)
             assert all(m['timestampSource'] == 'source' for m in messages['items'])
             checks.append('explicit upload: analysis only (prose, call, outcome, timestamps); no process/subagent bodies')
-            reader = call('POST', '/api/keys', headers=headers, json={'name': 'Docker query smoke', 'kind': 'query'}).json()['key']
-            query = requests.Session(); query.trust_env = False; query.headers['Authorization'] = 'Bearer ' + reader
-            found = query.get(origin + '/query/v1/sessions', params={'q': sid}, timeout=10).json()['items']
+            reader = call('POST', '/api/keys', headers=headers, json={'name': 'Docker agent smoke', 'kind': 'agent'}).json()['key']
+            agent = requests.Session(); agent.trust_env = False; agent.headers['Authorization'] = 'Bearer ' + reader
+            listed = []; cursor = None
+            while True:
+                page = agent.get(origin + '/agent/v1/sessions', params={'limit': 1, **({'cursor': cursor} if cursor else {})}, timeout=10).json()
+                listed += page['items']; cursor = page['nextCursor']
+                if not cursor:
+                    break
+            found = [item for item in listed if item['externalId'] == sid]
             assert [item['machine']['name'] for item in found] == ['Docker synthetic smoke']
-            page = query.get(origin + f"/query/v1/sessions/{quote(found[0]['id'], safe='')}/messages", timeout=10).json()
-            assert page['total'] == 4 and page['session']['machine']['name'] == 'Docker synthetic smoke'
-            assert query.get(origin + '/ingest/v1/status', timeout=10).status_code == 403
-            assert query.get(origin + '/api/keys', timeout=10).status_code == 401
-            assert web.get(origin + '/query/v1/machines', timeout=10).status_code == 200   # owner session
-            checks.append('query API key reads history with machine names; cannot upload or manage; owner can query too')
+            target = quote(found[0]['id'], safe='')
+            assert agent.get(origin + f'/agent/v1/sessions/{target}', timeout=10).json()['session']['messageCount'] == 4
+            page = agent.get(origin + f'/agent/v1/sessions/{target}/messages', params={'limit': 2}, timeout=10).json()
+            assert page['total'] == 4 and len(page['items']) == 2 and page['nextCursor'] == '2'
+            assert marker not in json.dumps(page)
+            assert agent.get(origin + '/ingest/v1/status', timeout=10).status_code == 403
+            assert agent.get(origin + '/api/keys', timeout=10).status_code == 401
+            assert web.get(origin + '/agent/v1/sessions', timeout=10).status_code == 200   # owner session
+            checks.append('agent API key: list sessions, session metadata, paged messages; cannot upload or manage; owner can call it too')
             if restart_project:
                 env = {**os.environ, 'VIEWER_LOCAL_PORT': str(parsed.port or 80)}
                 result = subprocess.run(['docker', 'compose', '-p', restart_project, '-f', str(COMPOSE), 'restart', 'viewer'],

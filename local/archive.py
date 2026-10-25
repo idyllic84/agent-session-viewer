@@ -405,6 +405,13 @@ class LocalArchive:
         return {'sessions': sessions, 'messages': messages, 'sourceFiles': files, 'lastSeq': self.last_seq(),
                 'datasetId': self.dataset, 'database': str(self.db.db_path)}
 
+    def pending_summary(self, acked):
+        """What the next sync would send, in user terms (sessions/messages, not sequence numbers)."""
+        with self.db.get_connection() as conn:
+            changes, sessions, messages = conn.execute('''SELECT COUNT(*), COUNT(DISTINCT session_id),
+                COALESCE(SUM(op='message'),0) FROM change_log WHERE seq>?''', (acked,)).fetchone()
+        return {'changes': changes, 'sessions': sessions, 'messages': messages}
+
     def session_revision(self, sid):
         with self.db.get_connection() as conn:
             return self.revision(conn, sid)

@@ -74,6 +74,18 @@ class App {
         this.loadSources();
         this.loadSessions();
         this.restoreSyncStatus();
+        const linked = new URLSearchParams(location.hash.slice(1)).get('session');
+        if (linked) {
+            this.sessionListView.selectSessionUI(linked);
+            this.loadSession(linked);
+        }
+        window.addEventListener('hashchange', () => {
+            const target = new URLSearchParams(location.hash.slice(1)).get('session');
+            if (target && target !== this.currentSessionId) {
+                this.sessionListView.selectSessionUI(target);
+                this.loadSession(target);
+            }
+        });
     }
 
     async loadSources() {
@@ -164,7 +176,9 @@ class App {
             this.status(`Sync running · ${state.indexedSessions ?? '?'} sessions already indexed. You can browse committed history.`);
             return;
         }
-        const stage = progress.phase === 'syncing'
+        const stage = progress.phase === 'importing'
+            ? `Importing · ${progress.filesDone} files checked · ${progress.added} new · ${progress.updated} updated · ${progress.skippedRecent} deferred${progress.failed ? ` · ${progress.failed} failed` : ''}`
+            : progress.phase === 'syncing'
             ? `${progress.filesDone} files processed · ${progress.sessionsDone} sessions synced · ${progress.skippedRecent || 0} recent files skipped`
             : progress.phase === 'scanning' ? `Scanning ${progress.filesDone}/${progress.filesTotal} files`
                 : progress.phase === 'importing' ? `Importing ${progress.sessionsDone}/${progress.sessionsTotal} sessions` : progress.phase;
@@ -231,6 +245,8 @@ class App {
             if (generation !== this.messageGeneration) return;
             branchSelect.disabled = !page.session.metadata.defaultLeaf;
             document.getElementById('conversationTitle').textContent = page.session.name + (page.session.machine ? ` · ${page.session.machine.name}` : '');
+            const hash = `#session=${encodeURIComponent(sessionId)}`;
+            if (location.hash !== hash) history.replaceState(null, '', hash);
             this.activeFilters = new Set(['user', 'assistant', 'tool-use', 'tool-result']);
             document.getElementById('uuidSearch').value = '';
             this.conversationView.render(page.items);

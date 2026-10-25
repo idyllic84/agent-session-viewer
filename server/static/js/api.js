@@ -12,8 +12,14 @@ export function fetchSources() { return requestJson('/api/sources'); }
 export async function fetchSessions(source = '', query = '', signal) {
     let cursor = 0; const items = [];
     do {
-        const machine = document.getElementById('machineSelect')?.value || '';
-        const page = await requestJson(`/api/sessions?${new URLSearchParams({ source, q: query, machine, cursor, limit: 500 })}`, { signal });
+        const params = new URLSearchParams({ source, q: query, cursor, limit: 500 });
+        const machine = document.getElementById('machineSelect')?.value;
+        if (machine) params.set('machine', machine);
+        // Date inputs are local calendar days: [from 00:00, to 23:59:59.999] in this browser's time zone.
+        const from = document.getElementById('dateFrom')?.value, to = document.getElementById('dateTo')?.value;
+        if (from) params.set('from', new Date(`${from}T00:00:00`).getTime());
+        if (to) params.set('to', new Date(`${to}T23:59:59.999`).getTime());
+        const page = await requestJson(`/api/sessions?${params}`, { signal });
         items.push(...page.items); cursor = page.nextCursor;
     } while (cursor !== null);
     return items;

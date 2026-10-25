@@ -10,4 +10,7 @@ details.console summary { cursor: pointer; font-weight: 600; }
 .console-actions { display: flex; flex-wrap: wrap; gap: 6px; margin: 6px 0; }
 #consoleMessage { margin-top: 6px; white-space: pre-wrap; }
 /* Analysis-only data: neither original-record replay nor saved branches exist. */
-#branchSelect, button[data-action="raw"] { display: none !important; }
+#branchSelect { display: none !important; }
+#uploadProgress { width: 100%; height: 10px; }
+.console-sources { display: flex; flex-wrap: wrap; gap: 4px 12px; margin-top: 4px; }
+.console-sources .missing { opacity: .6; }

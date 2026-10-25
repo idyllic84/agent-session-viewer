@@ -21,7 +21,7 @@ Agent 原始历史（只读）
 | 目录 | 职责 | 登录 | Docker | 测试 |
 |---|---|---|---|---|
 | [`local/`](local/README.md) | 五种来源增量导入、本地分析库、本地查看页、云同步控制台 | 不需要（仅 loopback） | 不需要 | `local/tests/` |
-| [`server/`](server/README.md) | 云端归档、按机器区分的查看页、上传/查询 API Key 管理、ingest 与只读查询 API | 控制台密码 | 本机直连 / VM + Cloudflare 两套 Compose | `server/tests/` |
+| [`server/`](server/README.md) | 云端归档、按机器区分的查看页、Upload/Agent API Key 管理、ingest 与只读 Agent API | 控制台密码 | 本机直连 / VM + Cloudflare 两套 Compose | `server/tests/` |
 | [`tests/`](tests/README.md) | 跨端集成、迁移、真实 HTTP / Docker / 浏览器 E2E | — | — | 仓库根目录 |
 
 `server/contracts/` 是两端共用的纯数据契约（不导入 Flask/SQLite）。本地服务
@@ -49,8 +49,8 @@ docker compose -f server/deploy/docker-compose.local.yml exec -T viewer cat /dat
 ```
 
 用该初始密码登录 **http://localhost:41880**，在控制台修改密码，并为每台电脑
-生成一个上传 API Key（只显示一次，Key 名称即机器名）；需要用程序读取历史时，再生成
-一个只读的**查询** Key，调用 `/query/v1/*`（Owner 登录后也可直接调用）。VM + Cloudflare 部署见
+生成一个 **Upload** 类型的 Key（只显示一次，Key 名称即机器名）；给分析 agent 再生成一个
+只读的 **Agent** Key，调用 `/agent/v1/*`（Owner 登录后也可直接调用）。VM + Cloudflare 部署见
 [server/deploy/README.md](server/deploy/README.md)。
 
 ### 3. 连接并同步
@@ -61,14 +61,17 @@ Save → **Sync to cloud**。保存连接不会上传；同步只在点击时运
 云端页面的会话列表会显示每个会话来自哪台机器（上传 Key 的名称），并可用 **Machine**
 下拉框筛选。
 
-### 4. 程序化查询历史（可选）
+### 4. 分析 agent 读取历史
+
+Agent API 只做三件事：列出全部会话、查看指定会话的 metadata、分页读取历史消息。
 
 ```bash
-curl -H "Authorization: Bearer <查询 Key>" "http://localhost:41880/query/v1/machines"
-curl -H "Authorization: Bearer <查询 Key>" "http://localhost:41880/query/v1/sessions?q=STT&machine=<机器id>"
+curl -H "Authorization: Bearer <Agent Key>" "http://localhost:41880/agent/v1/sessions?limit=200"
+curl -H "Authorization: Bearer <Agent Key>" "http://localhost:41880/agent/v1/sessions/<URL 编码的会话 id>"
+curl -H "Authorization: Bearer <Agent Key>" "http://localhost:41880/agent/v1/sessions/<URL 编码的会话 id>/messages?limit=500"
 ```
 
-完整接口见 [server/README.md](server/README.md#查询-api只读)。
+返回格式见 [server/README.md](server/README.md#agent-api只读)。
 
 ## 同步行为
 

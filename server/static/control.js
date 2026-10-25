@@ -14,17 +14,17 @@ async function api(path, body) {
 }
 const origin = location.origin;
 function showKey(value) {
-    const usage = value.kind === 'query'
-        ? `Read-only history API: ${origin}/query/v1/sessions  (header  Authorization: Bearer <key>)`
+    const usage = value.kind === 'agent'
+        ? `Agent API: ${origin}/agent/v1/sessions  (header  Authorization: Bearer <key>)`
         : `In the local console use cloud address: ${origin}`;
-    $('newKey').textContent = `${value.kind === 'query' ? 'Query' : 'Upload'} key "${value.name}" (shown once — copy it now):\n${value.key}\n\n${usage}`;
+    $('newKey').textContent = `${value.kind === 'agent' ? 'Agent' : 'Upload'} key "${value.name}" (shown once — copy it now):\n${value.key}\n\n${usage}`;
 }
 async function refresh() {
     try {
         const keys = await api('/api/keys'); const list = $('keyList'); list.replaceChildren();
         for (const key of keys) {
-            const detail = key.kind === 'query'
-                ? `query (read-only) · last used ${when(key.lastUsed)}`
+            const detail = key.kind === 'agent'
+                ? `agent (read-only API) · last used ${when(key.lastUsed)}`
                 : `upload · ${key.bound ? 'bound to one computer' : 'not used yet'} · ${key.uploadedChanges} changes · `
                   + `${key.sessions} sessions · last upload ${when(key.lastUpload)}`;
             const row = node('div', `${key.name} · ${key.keyId} · ${key.active ? 'active' : 'revoked'} · ${detail}`
@@ -62,17 +62,44 @@ $('changePassword').addEventListener('click', async () => {
 $('logout').addEventListener('click', async () => { await api('/auth/logout', {}); location.assign('/auth/login'); });
 $('reloadBtn').textContent = 'Refresh';
 
-// Machine filter: every session belongs to the upload key (computer) that sent it.
+// Machines: every session belongs to the upload key (computer) that sent it.
+const STALE_DAYS = 7;
+const ago = seconds => {
+    if (!seconds) return 'never uploaded';
+    const minutes = Math.max(0, Math.round((Date.now() / 1000 - seconds) / 60));
+    if (minutes < 60) return `${minutes} min ago`;
+    if (minutes < 48 * 60) return `${Math.round(minutes / 60)} h ago`;
+    return `${Math.round(minutes / 1440)} days ago`;
+};
 async function loadMachines() {
     try {
         const select = $('machineSelect'); const current = select.value;
+        const machines = await api('/api/machines');
         select.replaceChildren(new Option('All machines', ''));
-        for (const machine of await api('/api/machines'))
+        const summary = $('machineSummary'); summary.replaceChildren();
+        for (const machine of machines) {
             select.append(new Option(`${machine.name} (${machine.sessions})${machine.active ? '' : ' · revoked'}`, machine.id));
+            const stale = !machine.lastUpload || Date.now() / 1000 - machine.lastUpload > STALE_DAYS * 86400;
+            const chip = node('button', `${machine.name} · ${machine.sessions} sessions · ${ago(machine.lastUpload)}`);
+            chip.className = 'machine-chip' + (stale ? ' stale' : '') + (machine.id === current ? ' selected' : '');
+            chip.title = stale ? `No upload in the last ${STALE_DAYS} days — open that computer's local console and click Sync to cloud`
+                : 'Show only this machine';
+            chip.addEventListener('click', () => { select.value = select.value === machine.id ? '' : machine.id; select.dispatchEvent(new Event('change')); });
+            summary.append(chip);
+        }
         select.value = current;
     } catch (e) { say(e.message); }
 }
-$('machineSelect').addEventListener('change', () => $('sourceSelect').dispatchEvent(new Event('change')));
+const reloadList = () => $('sourceSelect').dispatchEvent(new Event('change'));
+$('machineSelect').addEventListener('change', () => { reloadList(); loadMachines(); });
+const isoDay = date => `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
+$('datePreset').addEventListener('change', () => {
+    const days = Number($('datePreset').value);
+    $('dateFrom').value = days ? isoDay(new Date(Date.now() - (days - 1) * 86400000)) : '';
+    $('dateTo').value = '';
+    reloadList();
+});
+for (const id of ['dateFrom', 'dateTo']) $(id).addEventListener('change', () => { $('datePreset').value = ''; reloadList(); });
 $('reloadBtn').addEventListener('click', loadMachines);
 loadMachines();
 refresh();

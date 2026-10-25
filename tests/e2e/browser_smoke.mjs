@@ -73,11 +73,25 @@ try {
         await evaluate('document.querySelector(".session-item").click()');
         await waitFor('document.querySelectorAll(".message-item").length === 5');
         assert.ok(await evaluate('document.getElementById("conversationTitle").textContent.endsWith(" · Docker synthetic smoke")'));
+        // Deep link: the opened session is in the URL and survives a reload.
+        const linked = await evaluate('location.hash');
+        assert.ok(linked.startsWith('#session='));
+        await evaluate('location.reload()');
+        await waitFor('document.querySelectorAll(".message-item").length === 5 && document.getElementById("conversationTitle").textContent.endsWith(" · Docker synthetic smoke")');
+        // Machine chips and date range presets filter the list.
+        await waitFor('[...document.querySelectorAll("#machineSummary .machine-chip")].some(c => c.textContent.startsWith("Docker synthetic smoke"))');
+        await evaluate('document.getElementById("dateTo").value="2000-01-01"; document.getElementById("dateTo").dispatchEvent(new Event("change"))');
+        await waitFor('document.getElementById("sessionSearchStatus").textContent.startsWith("0 sessions")');
+        await evaluate('document.getElementById("datePreset").value="1"; document.getElementById("datePreset").dispatchEvent(new Event("change"))');
+        await waitFor('document.getElementById("dateFrom").value !== "" && document.getElementById("dateTo").value === "" && document.querySelectorAll(".session-item").length > 0');
+        await evaluate('document.getElementById("datePreset").value=""; document.getElementById("datePreset").dispatchEvent(new Event("change"))');
+        await waitFor('document.getElementById("dateFrom").value === "" && document.querySelectorAll(".session-item").length > 0');
         assert.equal(await evaluate('document.querySelectorAll(".message-item.tool-use").length'), 1);
         assert.equal(await evaluate('document.querySelectorAll(".message-item.tool-result").length'), 1);
         await evaluate('document.querySelector(".message-item.tool-result").click()');
         await waitFor('document.getElementById("messageDetails").textContent.includes("success")');
-        assert.equal(await evaluate('getComputedStyle(document.querySelector("button[data-action=raw]")).display'), 'none');
+        assert.equal(await evaluate('document.querySelectorAll("#messageDetails button[data-action=raw]").length'), 0);
+        assert.ok(await evaluate('document.getElementById("messageDetails").textContent.includes("timeSource")'));
     } else {
         assert.equal(security.keys, 0); assert.equal(security.sessions, 0);
         await evaluate('document.getElementById("cloudConsole").open=true; document.getElementById("keyName").value="browser created"; document.getElementById("createKey").click()');
@@ -87,10 +101,16 @@ try {
         await waitFor('document.querySelectorAll("#keyList > div").length === 1');
         assert.ok(!await evaluate(`document.documentElement.outerHTML.includes(${JSON.stringify(shown)})`), 'key shown only once');
     }
+    if (process.env.SCREENSHOT) {   // optional visual check of the final page state
+        await command('Emulation.setDeviceMetricsOverride', { width: 1600, height: 1000, deviceScaleFactor: 1, mobile: false });
+        await delay(500);
+        const shot = await command('Page.captureScreenshot', { format: 'png' });
+        fs.writeFileSync(process.env.SCREENSHOT, Buffer.from(shot.data, 'base64'));
+    }
     assert.deepEqual(loginOrigins, [origin]);
     assert.deepEqual(errors, []);
     console.log(mode === '--analysis-data'
-        ? 'Docker analysis browser passed: machine badge/filter/title, timestamped messages, prose, invocation and outcome summary visible; original replay hidden; auth/CSRF intact.'
+        ? 'Docker analysis browser passed: machine badge/filter/title/chips, date range, deep link, timestamped messages, prose, invocation and outcome summary visible; original replay hidden; auth/CSRF intact.'
         : 'Docker browser passed: password login, protected viewer/assets, key console renders, CSRF rejection, key shown once.');
 } finally {
     socket?.close();

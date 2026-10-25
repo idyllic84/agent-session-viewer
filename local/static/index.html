@@ -15,6 +15,7 @@
             <section>
                 <h3>Local store</h3>
                 <div id="localStats">Loading…</div>
+                <div id="localSources" class="console-sources"></div>
             </section>
             <section>
                 <h3>Cloud connection</h3>
@@ -34,6 +35,7 @@
                     <button id="uploadPause" class="secondary">Pause</button>
                     <button id="uploadCancel" class="secondary">Cancel</button>
                 </div>
+                <progress id="uploadProgress" max="1" value="0" hidden></progress>
                 <div id="uploadState"></div>
             </section>
         </div>

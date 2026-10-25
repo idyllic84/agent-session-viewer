@@ -26,7 +26,7 @@ from .contracts.session_policy import is_user_message
 from .contracts.models import indexed_message_text
 
 SCRYPT = {'n': 2 ** 15, 'r': 8, 'p': 1}
-KEY_KINDS = ('upload', 'query')   # upload: one computer pushes data; query: read-only history access
+KEY_KINDS = ('upload', 'agent')   # upload: one computer pushes data; agent: read-only analysis API
 MIN_PASSWORD = 12
 
 
@@ -110,6 +110,7 @@ class CloudArchive:
             columns = {r[1] for r in conn.execute('PRAGMA table_info(cloud_clients)')}
             if 'kind' not in columns:   # additive upgrade: existing keys are upload keys
                 conn.execute("ALTER TABLE cloud_clients ADD COLUMN kind TEXT NOT NULL DEFAULT 'upload'")
+            conn.execute("UPDATE cloud_clients SET kind='agent' WHERE kind='query'")   # earlier name of the same key type
             conn.execute("INSERT OR IGNORE INTO cloud_settings VALUES('content_policy',?)", (POLICY,))
             conn.execute("INSERT OR IGNORE INTO cloud_settings VALUES('instance',?)", (secrets.token_hex(16),))
             conn.execute("INSERT OR IGNORE INTO cloud_settings VALUES('password_version','0')")
@@ -142,9 +143,9 @@ class CloudArchive:
         stored = self.setting('password_hash')
         return stored is not None and verify_password(password, stored)
 
-    # ----- API keys: upload (client slots) and query (read-only) -----
+    # ----- API keys: upload (client slots) and agent (read-only) -----
     def create_key(self, name, *, expires_days=None, kind='upload'):
-        require(kind in KEY_KINDS, 'Key type must be upload or query', status=400)
+        require(kind in KEY_KINDS, 'Key type must be upload or agent', status=400)
         require(isinstance(name, str) and 0 < len(name.strip()) <= 160, 'Key name is required (max 160 characters)', status=400)
         require(expires_days is None or isinstance(expires_days, int) and not isinstance(expires_days, bool) and 1 <= expires_days <= 3650,
                 'Expiry must be 1..3650 days', status=400)
@@ -208,6 +209,56 @@ class CloudArchive:
                 FROM cloud_clients c WHERE c.kind='upload' ORDER BY c.name,c.created''').fetchall()
         return [{'id': r['id'], 'name': r['name'], 'active': bool(r['active']), 'sessions': r['sessions'],
                  'lastUpload': r['last_upload'] or None} for r in rows]
+
+    # ----- agent API: list sessions, session metadata, paged messages -----
+    AGENT_SESSION_SQL = '''SELECT s.*,c.id AS machine_id,c.name AS machine_name,cs.revision FROM sessions s
+        JOIN cloud_sessions cs ON cs.id=s.id JOIN cloud_clients c ON c.id=cs.client_id
+        WHERE s.message_count>0 AND viewer_subagent(s.source,s.path,s.metadata)=0'''
+
+    @staticmethod
+    def agent_summary(row, *, detail=False):
+        metadata = json.loads(row['metadata'])
+        value = {'id': row['id'], 'machine': {'id': row['machine_id'], 'name': row['machine_name']},
+                 'source': row['source'], 'externalId': row['external_id'], 'project': row['project'], 'name': row['name'],
+                 'messageCount': row['message_count'], 'userMessageCount': metadata.get('userMessageCount', 0),
+                 'lastModified': row['last_modified'], 'available': bool(row['available']), 'revision': row['revision']}
+        if detail:
+            value['metadata'] = {k: v for k, v in metadata.items() if k != 'userMessageCount'}
+        return value
+
+    def agent_sessions(self, after=None, limit=100):
+        """Every non-empty session, ordered by ID; keyset cursor is stable under uploads."""
+        with self.db.get_connection() as conn:
+            total = conn.execute(f'SELECT COUNT(*) FROM ({self.AGENT_SESSION_SQL})').fetchone()[0]
+            sql = self.AGENT_SESSION_SQL + (' AND s.id>?' if after else '') + ' ORDER BY s.id LIMIT ?'
+            rows = conn.execute(sql, ((after,) if after else ()) + (limit + 1,)).fetchall()
+        items = [self.agent_summary(r) for r in rows[:limit]]
+        return items, total, items[-1]['id'] if len(rows) > limit else None
+
+    def agent_session(self, sid):
+        with self.db.get_connection() as conn:
+            row = conn.execute(self.AGENT_SESSION_SQL + ' AND s.id=?', (sid,)).fetchone()
+        return self.agent_summary(row, detail=True) if row else None
+
+    def agent_messages(self, sid, offset=0, limit=500, revision=None):
+        with self.db.transaction(write=False) as conn:
+            row = conn.execute(self.AGENT_SESSION_SQL + ' AND s.id=?', (sid,)).fetchone()
+            require(row is not None, 'Unknown session', 'NOT_FOUND', 404)
+            require(revision is None or revision == row['revision'], 'Session changed; restart paging from cursor 0', 'SESSION_CHANGED', 409)
+            items = []
+            for r in conn.execute('SELECT normalized_json,order_id FROM messages WHERE session_id=? ORDER BY order_id LIMIT ? OFFSET ?',
+                                  (sid, limit, offset)):
+                m = unpack_json(r[0])
+                item = {'id': m['id'], 'order': r[1], 'type': m['type'], 'role': m['role'], 'timestamp': m['timestamp'],
+                        'timestampSource': m['timestampSource'], 'content': m['message']['content']}
+                for key in ('toolCallId', 'status'):
+                    if key in m:
+                        item[key] = m[key]
+                items.append(item)
+            total = row['message_count']
+        nxt = offset + len(items)
+        return {'sessionId': sid, 'revision': row['revision'], 'total': total, 'items': items,
+                'nextCursor': str(nxt) if nxt < total else None}
 
     # ----- ingest -----
     def status(self, client, dataset=None):

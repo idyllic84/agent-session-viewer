@@ -1,5 +1,4 @@
 import { formatJson, escapeHtml } from './utils.js';
-import { fetchRawMessage } from './api.js';
 
 export class MessageDetailsView {
     constructor(containerId) {
@@ -8,7 +7,6 @@ export class MessageDetailsView {
         this.generation = 0;
         this.container.addEventListener('click', event => {
             const button = event.target.closest('button');
-            if (button?.dataset.action === 'raw') this.loadRaw(button);
             if (button?.dataset.action === 'wrap') {
                 button.closest('.content-block').querySelector('pre').classList.toggle('no-wrap');
                 button.classList.toggle('active');
@@ -22,17 +20,16 @@ export class MessageDetailsView {
         if (!message) { this.clear(); return; }
         const content = message.message?.content || [];
         const blocks = Array.isArray(content) ? content : [{ type: 'text', text: content }];
-        const metadata = { source: message.source, nativeType: message.nativeType, uuid: message.uuid,
-            parentUuid: message.parentUuid, model: message.model, provider: message.provider,
-            usage: message.usage, status: message.status, sourceLocator: message.sourceLocator };
+        // Analysis store: no original records exist; show what the stored message really carries.
+        const metadata = { id: message.id, type: message.type, time: Number.isFinite(message.timestamp) ? new Date(message.timestamp).toISOString() : null,
+            timeSource: message.timestampSource, toolCallId: message.toolCallId, status: message.status };
+        const approximate = message.timestampSource === 'file_mtime'
+            ? '<p class="detail-note">The source had no time for this message; the file modification time is shown instead.</p>' : '';
         this.container.innerHTML = `<div class="detail-section">
             <h3>Message Content</h3>${blocks.map(block => this.renderContentBlock(block)).join('')}
             </div><div class="detail-section"><h3>Metadata</h3>
-            <pre class="json-view">${escapeHtml(formatJson(metadata))}</pre></div>
-            <div class="detail-section"><h3>Original Record</h3>
-                <p class="detail-note">Original source files are read-only. VS Code records are state operations; the source locator identifies the reconstructed request/chunk.</p>
-                <button data-action="raw">Load original record</button><div id="rawRecord"></div>
-            </div><details class="detail-section"><summary>Normalized JSON</summary>
+            <pre class="json-view">${escapeHtml(formatJson(metadata))}</pre>${approximate}</div>
+            <details class="detail-section"><summary>Stored JSON</summary>
                 <pre class="json-view">${escapeHtml(formatJson(message))}</pre></details>`;
     }
 
@@ -50,24 +47,6 @@ export class MessageDetailsView {
                 <button data-action="wrap" class="wrap-toggle" title="Toggle wrap">⏎</button></div>
             ${kind === 'tool_use' ? `<div class="tool-name">${escapeHtml(block.name || 'Unknown')}</div>` : ''}
             <pre class="content-text">${escapeHtml(value)}</pre></div>`;
-    }
-
-    async loadRaw(button) {
-        const generation = this.generation;
-        const message = this.currentMessage;
-        if (!message) return;
-        button.disabled = true;
-        try {
-            const result = await fetchRawMessage(message.id);
-            if (generation !== this.generation) return;
-            const target = document.getElementById('rawRecord');
-            target.innerHTML = `<pre class="json-view">${escapeHtml(formatJson(result))}</pre>`;
-            button.hidden = true;
-        } catch (error) {
-            if (generation !== this.generation) return;
-            document.getElementById('rawRecord').textContent = error.message;
-            button.disabled = false;
-        }
     }
 
     clear() {

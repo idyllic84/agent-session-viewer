@@ -88,7 +88,7 @@ class Uploader:
             high = self.status().get('highWater') or self.archive.last_seq()
             if high < ack:
                 high = self.archive.last_seq()
-            self._set(highWater=high, ackSeq=ack, state='uploading' if ack < high else 'up to date')
+            self._set(highWater=high, ackSeq=ack, fromSeq=ack, state='uploading' if ack < high else 'up to date')
             while ack < high:
                 self._checkpoint()
                 connection = self.archive.connection()
