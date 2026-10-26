@@ -234,19 +234,11 @@ def create_app(archive, *, session_secret, public_origin, allow_http=False):
             item['machine'] = machine; item['uploadedBy'] = machine['name'] if machine else None
         return items
 
-    def millis(name):
-        value = request.args.get(name) or None
-        if value is None:
-            return None
-        require(value.isdigit(), f'{name} must be epoch milliseconds', status=400)
-        return int(value)
-
     def history_page():
         offset, limit = page(100, 500)
         items, total = archive.db.list_sessions(source=request.args.get('source') or None, project=request.args.get('project') or None,
                                                 query=request.args.get('q', '').strip(), offset=offset, limit=limit,
-                                                client=request.args.get('machine') or None,
-                                                modified_from=millis('from'), modified_to=millis('to'))
+                                                client=request.args.get('machine') or None)
         return jsonify(items=with_machines(items), total=total, nextCursor=offset + len(items) if offset + len(items) < total else None)
 
     def history_messages(sid):

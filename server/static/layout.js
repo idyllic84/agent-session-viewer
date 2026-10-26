@@ -4,7 +4,7 @@
 const $ = id => document.getElementById(id);
 const narrow = window.matchMedia('(max-width: 900px)');
 const body = document.body;
-const FILTER_IDS = ['machineSelect', 'sourceSelect', 'projectSelect', 'dateFrom', 'dateTo', 'sessionSearch'];
+const FILTER_IDS = ['machineSelect', 'sourceSelect', 'projectSelect', 'sessionSearch'];
 
 function linkedSession() { return new URLSearchParams(location.hash.slice(1)).get('session'); }
 

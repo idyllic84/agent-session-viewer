@@ -86,14 +86,9 @@ try {
         assert.ok(linked.startsWith('#session='));
         await evaluate('location.reload()');
         await waitFor('document.querySelectorAll(".message-item").length === 5 && document.getElementById("conversationTitle").textContent.endsWith(" · Docker synthetic smoke")');
-        // Machine chips and date range presets filter the list.
+        // Machine chips summarise each computer; the list has no date filter.
         await waitFor('[...document.querySelectorAll("#machineSummary .machine-chip")].some(c => c.textContent.startsWith("Docker synthetic smoke"))');
-        await evaluate('document.getElementById("dateTo").value="2000-01-01"; document.getElementById("dateTo").dispatchEvent(new Event("change"))');
-        await waitFor('document.getElementById("sessionSearchStatus").textContent.startsWith("0 sessions")');
-        await evaluate('document.getElementById("datePreset").value="1"; document.getElementById("datePreset").dispatchEvent(new Event("change"))');
-        await waitFor('document.getElementById("dateFrom").value !== "" && document.getElementById("dateTo").value === "" && document.querySelectorAll(".session-item").length > 0');
-        await evaluate('document.getElementById("datePreset").value=""; document.getElementById("datePreset").dispatchEvent(new Event("change"))');
-        await waitFor('document.getElementById("dateFrom").value === "" && document.querySelectorAll(".session-item").length > 0');
+        assert.equal(await evaluate('document.querySelectorAll("#dateFrom, #dateTo, #datePreset").length'), 0);
         assert.equal(await evaluate('document.querySelectorAll(".message-item.tool-use").length'), 1);
         assert.equal(await evaluate('document.querySelectorAll(".message-item.tool-result").length'), 1);
         await evaluate('document.querySelector(".message-item.tool-result").click()');
@@ -160,7 +155,7 @@ try {
     assert.deepEqual(loginOrigins, [origin]);
     assert.deepEqual(errors, []);
     console.log(mode === '--analysis-data'
-        ? 'Docker analysis browser passed: machine badge/filter/title/chips, date range, deep link, timestamped messages, prose, invocation and outcome summary visible; original replay hidden; phone layout (one pane, Back, filters, console sheet); auth/CSRF intact.'
+        ? 'Docker analysis browser passed: machine badge/filter/title/chips, deep link, timestamped messages, prose, invocation and outcome summary visible; original replay hidden; phone layout (one pane, Back, filters, console sheet); auth/CSRF intact.'
         : 'Docker browser passed: password login, protected viewer/assets, console sheet opens/closes, CSRF rejection, key shown once.');
 } finally {
     socket?.close();

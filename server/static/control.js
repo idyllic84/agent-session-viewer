@@ -1,5 +1,5 @@
 // Cloud console (sheet) and session-list filters that only exist in the cloud:
-// API keys, owner password, machines and the updated-date range.
+// API keys, owner password and the machine filter.
 // The cloud never commands local computers.
 const csrf = document.querySelector('meta[name=cloud-csrf]').content;
 const $ = id => document.getElementById(id);
@@ -108,7 +108,7 @@ $('changePassword').addEventListener('click', async () => {
 });
 $('logout').addEventListener('click', async () => { await api('/auth/logout', {}); location.assign('/auth/login'); });
 
-// ----- machines and dates (session-list filters) -----
+// ----- machines (session-list filter) -----
 const STALE_DAYS = 7;
 async function loadMachines() {
     try {
@@ -132,13 +132,5 @@ async function loadMachines() {
 }
 const reloadList = () => $('sourceSelect').dispatchEvent(new Event('change'));
 $('machineSelect').addEventListener('change', () => { reloadList(); loadMachines(); });
-const isoDay = date => `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
-$('datePreset').addEventListener('change', () => {
-    const days = Number($('datePreset').value);
-    $('dateFrom').value = days ? isoDay(new Date(Date.now() - (days - 1) * 86400000)) : '';
-    $('dateTo').value = '';
-    reloadList();
-});
-for (const id of ['dateFrom', 'dateTo']) $(id).addEventListener('change', () => { $('datePreset').value = ''; reloadList(); });
 $('reloadBtn').addEventListener('click', loadMachines);
 loadMachines();

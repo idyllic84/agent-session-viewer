@@ -15,10 +15,6 @@ export async function fetchSessions(source = '', query = '', signal) {
         const params = new URLSearchParams({ source, q: query, cursor, limit: 500 });
         const machine = document.getElementById('machineSelect')?.value;
         if (machine) params.set('machine', machine);
-        // Date inputs are local calendar days: [from 00:00, to 23:59:59.999] in this browser's time zone.
-        const from = document.getElementById('dateFrom')?.value, to = document.getElementById('dateTo')?.value;
-        if (from) params.set('from', new Date(`${from}T00:00:00`).getTime());
-        if (to) params.set('to', new Date(`${to}T23:59:59.999`).getTime());
         const page = await requestJson(`/api/sessions?${params}`, { signal });
         items.push(...page.items); cursor = page.nextCursor;
     } while (cursor !== null);

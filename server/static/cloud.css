@@ -33,14 +33,12 @@ body > .container { flex: 1; min-height: 0; height: auto; }
 /* ---------- session filters ---------- */
 #sessionFilterBar { display: grid; grid-template-columns: 1fr 1fr; gap: 8px 10px; align-items: end; }
 #sessionFilterBar .field { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
-#sessionFilterBar .field-search, #sessionFilterBar .field-dates { grid-column: 1 / -1; }
+#sessionFilterBar .field-search { grid-column: 1 / -1; }
 #sessionFilterBar select, #sessionFilterBar input { width: 100%; min-width: 0; }
 #sessionFilterBar .filter-label { font-size: 10px; letter-spacing: .4px; }
 #sessionFilterBar .uuid-search { margin: 0; width: 100%; }
 #machineSelect { max-width: none; }
-.date-range { display: grid; grid-template-columns: 1fr auto 1fr; gap: 6px; align-items: center; }
-.date-range select { grid-column: 1 / -1; }
-.date-range input[type=date], .date-range select, #sessionFilterBar select {
+#sessionFilterBar select {
     color-scheme: dark; background: var(--bg-primary); color: inherit; border: 1px solid var(--border-color); border-radius: 4px; padding: 5px 6px;
 }
 .list-status { display: flex; align-items: center; gap: 8px; padding-right: 8px; }
@@ -195,6 +193,4 @@ button.danger:hover { background: var(--danger); color: #fff; }
 @media (max-width: 380px) {
     .app-bar { gap: 6px; padding-left: 8px; padding-right: 8px; }
     .app-button { padding: 0 9px; }
-    .date-range { grid-template-columns: 1fr; }
-    .date-range span { display: none; }
 }

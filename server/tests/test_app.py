@@ -167,9 +167,7 @@ class CloudAppTests(unittest.TestCase):
         laptop = next(m['id'] for m in machines if m['name'] == 'laptop')
         self.assertEqual(owner.get('/api/sessions', base_url=ORIGIN, query_string={'machine': laptop}).json['total'], 1)
         self.assertIn('machineSelect', owner.get('/', base_url=ORIGIN).text)
-        from server.tests.test_archive import TS
-        self.assertEqual(owner.get('/api/sessions', base_url=ORIGIN, query_string={'from': TS - 1, 'to': TS + 1}).json['total'], 2)
-        self.assertEqual(owner.get('/api/sessions', base_url=ORIGIN, query_string={'from': TS + 1}).json['total'], 0)
+        self.assertNotIn('dateFrom', owner.get('/', base_url=ORIGIN).text)
 
     def test_old_query_keys_become_agent_keys(self):
         import sqlite3

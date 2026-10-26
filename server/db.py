@@ -492,16 +492,11 @@ class Database:
             row = conn.execute('SELECT * FROM sessions WHERE id=?', (session_id,)).fetchone()
             return self._session(row) if row and not is_subagent(row['source'], row['path'], json.loads(row['metadata'])) else None
 
-    def list_sessions(self, project=None, source=None, query='', offset=0, limit=None, client=None,
-                      modified_from=None, modified_to=None):
+    def list_sessions(self, project=None, source=None, query='', offset=0, limit=None, client=None):
         clauses, params = ['s.message_count>0', "COALESCE(json_extract(s.metadata,'$.userMessageCount'),0)>0",
                            'viewer_subagent(s.source,s.path,s.metadata)=0'], []
         if client:
             clauses.append('s.id IN (SELECT id FROM cloud_sessions WHERE client_id=?)'); params.append(client)
-        if modified_from is not None:
-            clauses.append('s.last_modified>=?'); params.append(modified_from)
-        if modified_to is not None:
-            clauses.append('s.last_modified<=?'); params.append(modified_to)
         if project:
             clauses.append('s.project=?'); params.append(project)
         if source:
