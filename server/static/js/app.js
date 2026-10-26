@@ -246,7 +246,7 @@ class App {
             branchSelect.disabled = !page.session.metadata.defaultLeaf;
             document.getElementById('conversationTitle').textContent = page.session.name + (page.session.machine ? ` · ${page.session.machine.name}` : '');
             const hash = `#session=${encodeURIComponent(sessionId)}`;
-            if (location.hash !== hash) history.replaceState(null, '', hash);
+            if (location.hash !== hash) history.replaceState(history.state, '', hash);
             this.activeFilters = new Set(['user', 'assistant', 'tool-use', 'tool-result']);
             document.getElementById('uuidSearch').value = '';
             this.conversationView.render(page.items);

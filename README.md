@@ -48,7 +48,7 @@ docker compose -f server/deploy/docker-compose.local.yml up -d --build --wait
 docker compose -f server/deploy/docker-compose.local.yml exec -T viewer cat /data/initial-admin-password
 ```
 
-用该初始密码登录 **http://localhost:41880**，在控制台修改密码，并为每台电脑
+用该初始密码登录 **http://localhost:41880**，点右上角 **Console** 修改密码，并为每台电脑
 生成一个 **Upload** 类型的 Key（只显示一次，Key 名称即机器名）；给分析 agent 再生成一个
 只读的 **Agent** Key，调用 `/agent/v1/*`（Owner 登录后也可直接调用）。VM + Cloudflare 部署见
 [server/deploy/README.md](server/deploy/README.md)。
@@ -59,7 +59,8 @@ docker compose -f server/deploy/docker-compose.local.yml exec -T viewer cat /dat
 Save → **Sync to cloud**。保存连接不会上传；同步只在点击时运行。
 
 云端页面的会话列表会显示每个会话来自哪台机器（上传 Key 的名称），并可用 **Machine**
-下拉框筛选。
+下拉框筛选。云端页面适配手机：窄屏时一次显示一栏（会话 → 对话 → 消息详情），
+支持返回键，筛选条件收在 **Filters** 里。
 
 ### 4. 分析 agent 读取历史
 

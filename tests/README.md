@@ -22,7 +22,8 @@ python -m unittest discover -s tests
 - `test_layout.py`：两应用边界、数据库/密钥 Git 排除。
 - `e2e/local_browser.mjs`：真实浏览器操作本地查看页和云同步控制台（合成数据 + 进程内云端）。
 - `e2e/smoke.py`：Docker 云端 + 真实本地服务子进程 + 重启持久化 + Agent Key 读取历史。
-- `e2e/browser_smoke.mjs`：Docker 云端页面真实浏览器：密码登录、Key 控制台、CSRF、机器徽标/筛选/标签、日期范围、深链接。
+- `e2e/browser_smoke.mjs`：Docker 云端页面真实浏览器：密码登录、Console 面板、CSRF、机器徽标/筛选/标签、日期范围、深链接，
+  以及 390×844 手机视口下的单栏导航、返回、筛选折叠与全屏 Console。设 `SCREENSHOT_DIR=<目录>` 可保存各状态截图。
 
 ```bash
 node --experimental-default-type=module tests/e2e/local_browser.mjs

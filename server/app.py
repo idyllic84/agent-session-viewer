@@ -173,13 +173,8 @@ def create_app(archive, *, session_secret, public_origin, allow_http=False):
     @app.get('/')
     def index():
         text = (STATIC / 'index.html').read_text(encoding='utf-8')
-        text = text.replace('</head>', '<link rel="stylesheet" href="/cloud-assets/cloud.css"><meta name="cloud-csrf" content="'
-                            + html.escape(session['csrf']) + '"></head>')
-        panel = (STATIC / 'console.html').read_text(encoding='utf-8')
-        text = text.replace('<div class="container">', panel + '<div class="container">', 1)
-        text = text.replace('Local history only. Click Reload to import.', 'Cloud archive · uploaded by local servers. Reload refreshes the list.')
-        text = text.replace('Agent History · Read-only', 'Agent History · Cloud')
-        text = text.replace('</body>', '<script src="/cloud-assets/control.js" type="module"></script></body>')
+        text = text.replace('__CSRF_TOKEN__', html.escape(session['csrf']), 1)
+        text = text.replace('<!--CONSOLE-->', (STATIC / 'console.html').read_text(encoding='utf-8'), 1)
         return text, 200, {'Content-Type': 'text/html; charset=utf-8'}
 
     @app.get('/static/<path:name>')

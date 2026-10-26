@@ -48,6 +48,14 @@ try {
         const diagnostic = await evaluate(`JSON.stringify({path:location.pathname, login:!!document.querySelector('input[name=password]'), cloudMeta:!!document.querySelector('meta[name=cloud-csrf]'), sourceOptions:document.querySelectorAll('#sourceSelect option').length, status:document.getElementById('sessionSearchStatus')?.textContent, cloudError:document.getElementById('cloudError')?.textContent, responseError:(()=>{try{const e=JSON.parse(document.body.textContent).error;return e&&{code:e.code,message:e.message}}catch{return null}})()})`);
         throw new Error(`Browser condition not reached: ${diagnostic}; runtime errors: ${JSON.stringify(errors)}`);
     };
+    // Optional visual check: SCREENSHOT_DIR=<folder> saves PNGs of the main states.
+    const shoot = async name => {
+        if (!process.env.SCREENSHOT_DIR) return;
+        await delay(300);
+        const shot = await command('Page.captureScreenshot', { format: 'png' });
+        fs.writeFileSync(path.join(process.env.SCREENSHOT_DIR, `${name}.png`), Buffer.from(shot.data, 'base64'));
+    };
+    await command('Emulation.setDeviceMetricsOverride', { width: 1600, height: 1000, deviceScaleFactor: 1, mobile: false });
     await command('Runtime.enable'); await command('Network.enable'); await command('Page.navigate', { url: origin });
     await waitFor('Boolean(document.querySelector("input[name=password]"))');
     await evaluate(`document.querySelector('input[name=password]').value=${JSON.stringify(owner)};document.querySelector('form').requestSubmit()`);
@@ -92,26 +100,68 @@ try {
         await waitFor('document.getElementById("messageDetails").textContent.includes("success")');
         assert.equal(await evaluate('document.querySelectorAll("#messageDetails button[data-action=raw]").length'), 0);
         assert.ok(await evaluate('document.getElementById("messageDetails").textContent.includes("timeSource")'));
+        await shoot('desktop-viewer');
+
+        // Phone layout: one pane at a time, Back (button and browser history), collapsible filters, no sideways scrolling.
+        await command('Emulation.setDeviceMetricsOverride', { width: 390, height: 844, deviceScaleFactor: 2, mobile: true });
+        await command('Emulation.setTouchEmulationEnabled', { enabled: true });
+        await evaluate('history.replaceState(null, "", location.pathname); location.reload()');
+        await waitFor('document.querySelectorAll(".session-item").length > 0');
+        const shown = selector => `getComputedStyle(document.querySelector(${JSON.stringify(selector)})).display !== "none"`;
+        const fits = 'document.documentElement.scrollWidth <= innerWidth';
+        assert.equal(await evaluate('document.body.dataset.view'), 'list');
+        assert.ok(await evaluate(`${shown('.left-panel')} && !(${shown('.middle-panel')}) && !(${shown('.right-panel')}) && ${fits}`));
+        assert.ok(await evaluate(`!(${shown('#sessionFilterBar')}) && ${shown('#filtersBtn')} && document.getElementById("backBtn").hidden`));
+        await evaluate('document.getElementById("filtersBtn").click()');
+        assert.ok(await evaluate(`${shown('#sessionFilterBar')} && document.getElementById("filtersBtn").getAttribute("aria-expanded") === "true"`));
+        await evaluate(`document.getElementById("machineSelect").value=${JSON.stringify(machine)}; document.getElementById("machineSelect").dispatchEvent(new Event("change"))`);
+        await waitFor('document.getElementById("filterCount").textContent === "1" && !document.getElementById("filterCount").hidden');
+        await shoot('phone-filters');
+        await waitFor('document.querySelectorAll(".session-item").length > 0');
+        await evaluate('document.querySelector(".session-item").click()');
+        await waitFor(`document.body.dataset.view === "conversation" && document.querySelectorAll(".message-item").length === 5 && ${shown('.middle-panel')} && !(${shown('.left-panel')})`);
+        assert.ok(await evaluate(`!document.getElementById("backBtn").hidden && !(${shown('#sessionFilterBar')}) && ${fits}`));
+        await waitFor('document.getElementById("appSubtitle").textContent.endsWith(" · Docker synthetic smoke")');
+        await shoot('phone-conversation');
+        await evaluate('document.querySelector(".message-item.tool-use").click()');
+        await waitFor(`document.body.dataset.view === "details" && ${shown('.right-panel')} && !(${shown('.middle-panel')})`);
+        assert.ok(await evaluate(fits));
+        await shoot('phone-details');
+        await evaluate('history.back()');
+        await waitFor(`document.body.dataset.view === "conversation" && ${shown('.middle-panel')}`);
+        await evaluate('document.getElementById("backBtn").click()');
+        await waitFor(`document.body.dataset.view === "list" && ${shown('.left-panel')} && document.getElementById("backBtn").hidden`);
+        // A shared deep link opens straight on the conversation pane.
+        await evaluate(`location.hash = ${JSON.stringify(linked)}; location.reload()`);
+        await waitFor(`document.body.dataset.view === "conversation" && document.querySelectorAll(".message-item").length === 5 && ${shown('.middle-panel')}`);
+        await evaluate('document.getElementById("consoleBtn").click()');
+        await waitFor('!document.getElementById("consoleSheet").hidden && document.querySelectorAll("#keyList .key-card").length > 0');
+        assert.ok(await evaluate('Math.abs(document.querySelector(".sheet-panel").getBoundingClientRect().width - innerWidth) < 1'));
+        await shoot('phone-console');
+        await evaluate('document.dispatchEvent(new KeyboardEvent("keydown", {key: "Escape"}))');
+        await waitFor('document.getElementById("consoleSheet").hidden');
     } else {
         assert.equal(security.keys, 0); assert.equal(security.sessions, 0);
-        await evaluate('document.getElementById("cloudConsole").open=true; document.getElementById("keyName").value="browser created"; document.getElementById("createKey").click()');
-        await waitFor('document.getElementById("newKey").textContent.includes("asv_") && document.querySelectorAll("#keyList > div").length === 1');
+        assert.ok(await evaluate('document.getElementById("consoleSheet").hidden'));
+        await evaluate('document.getElementById("consoleBtn").click()');
+        await waitFor('!document.getElementById("consoleSheet").hidden && document.activeElement?.id === "consoleClose"');
+        await evaluate('document.getElementById("keyName").value="browser created"; document.getElementById("createKey").click()');
+        await waitFor('document.getElementById("newKey").textContent.includes("asv_") && !document.getElementById("newKeyBox").hidden && document.querySelectorAll("#keyList .key-card").length === 1');
         const shown = await evaluate('document.getElementById("newKey").textContent.match(/asv_[A-Za-z0-9_-]+/)[0]');
-        await evaluate('location.reload()');
-        await waitFor('document.querySelectorAll("#keyList > div").length === 1');
+        await shoot('desktop-console');
+        await evaluate('document.querySelector(".sheet-backdrop").click()');
+        await waitFor('document.getElementById("consoleSheet").hidden');
+        await evaluate('window.beforeReload = true; location.reload()');
+        await waitFor('!window.beforeReload && document.querySelectorAll("#machineSummary .machine-chip").length === 1');
+        await evaluate('document.getElementById("consoleBtn").click()');
+        await waitFor('document.querySelectorAll("#keyList .key-card").length === 1 && document.getElementById("newKeyBox").hidden');
         assert.ok(!await evaluate(`document.documentElement.outerHTML.includes(${JSON.stringify(shown)})`), 'key shown only once');
-    }
-    if (process.env.SCREENSHOT) {   // optional visual check of the final page state
-        await command('Emulation.setDeviceMetricsOverride', { width: 1600, height: 1000, deviceScaleFactor: 1, mobile: false });
-        await delay(500);
-        const shot = await command('Page.captureScreenshot', { format: 'png' });
-        fs.writeFileSync(process.env.SCREENSHOT, Buffer.from(shot.data, 'base64'));
     }
     assert.deepEqual(loginOrigins, [origin]);
     assert.deepEqual(errors, []);
     console.log(mode === '--analysis-data'
-        ? 'Docker analysis browser passed: machine badge/filter/title/chips, date range, deep link, timestamped messages, prose, invocation and outcome summary visible; original replay hidden; auth/CSRF intact.'
-        : 'Docker browser passed: password login, protected viewer/assets, key console renders, CSRF rejection, key shown once.');
+        ? 'Docker analysis browser passed: machine badge/filter/title/chips, date range, deep link, timestamped messages, prose, invocation and outcome summary visible; original replay hidden; phone layout (one pane, Back, filters, console sheet); auth/CSRF intact.'
+        : 'Docker browser passed: password login, protected viewer/assets, console sheet opens/closes, CSRF rejection, key shown once.');
 } finally {
     socket?.close();
     if (browser?.pid) {

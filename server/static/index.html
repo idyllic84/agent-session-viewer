@@ -2,53 +2,73 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Agent History Viewer</title>
-    <link rel="stylesheet" href="static/css/style.css">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+    <meta name="theme-color" content="#252526">
+    <meta name="cloud-csrf" content="__CSRF_TOKEN__">
+    <title>Agent History · Cloud</title>
+    <link rel="stylesheet" href="/static/css/style.css">
+    <link rel="stylesheet" href="/cloud-assets/cloud.css">
 </head>
-<body>
-    <div class="container">
-        <!-- Left Panel: Session List -->
-        <div class="panel left-panel">
-            <div class="panel-header">
-                <h2>Agent History · Read-only</h2>
-                <button id="reloadBtn">Reload</button>
-            </div>
+<body data-view="list">
+    <header class="app-bar">
+        <button id="backBtn" class="app-back" type="button" aria-label="Back">‹ <span>Back</span></button>
+        <div class="app-title">
+            <strong>Agent History</strong>
+            <span id="appSubtitle" class="app-subtitle">Cloud</span>
+        </div>
+        <div class="app-actions">
+            <button id="filtersBtn" class="app-button filters-toggle" type="button" aria-expanded="false" aria-controls="sessionFilterBar">
+                Filters <span id="filterCount" class="count-badge" hidden></span>
+            </button>
+            <button id="reloadBtn" class="app-button" type="button">Refresh</button>
+            <button id="consoleBtn" class="app-button" type="button" aria-haspopup="dialog" aria-controls="consoleSheet">Console</button>
+        </div>
+    </header>
+
+    <main class="container">
+        <!-- Sessions -->
+        <section class="panel left-panel" aria-label="Sessions">
             <div class="filter-bar" id="sessionFilterBar">
-                <label class="filter-label" for="machineSelect">Machine:</label>
-                <select id="machineSelect"><option value="">All machines</option></select>
-                <label class="filter-label" for="dateFrom">Updated:</label>
-                <span class="date-range"><input type="date" id="dateFrom" aria-label="Updated from"> – <input type="date" id="dateTo" aria-label="Updated until">
-                    <select id="datePreset" aria-label="Quick date range"><option value="">Any time</option><option value="1">Today</option>
-                    <option value="7">Last 7 days</option><option value="30">Last 30 days</option><option value="90">Last 90 days</option></select></span>
-                <label class="filter-label" for="sourceSelect">Source:</label>
-                <select id="sourceSelect"><option value="">All sources</option></select>
-                <label class="filter-label" for="projectSelect">Project:</label>
-                <select id="projectSelect"><option value="">All projects</option></select>
-                <div class="filter-label">Search:</div>
-                <div class="uuid-search">
-                    <input type="search" id="sessionSearch" placeholder="Search user/assistant content…" aria-label="Search sessions by user and assistant prose" />
-                    <button id="sessionSearchBtn" title="Search sessions">Search</button>
-                    <button id="clearSessionSearchBtn" class="clear-btn" title="Clear search">×</button>
+                <div class="field field-search">
+                    <div class="uuid-search">
+                        <input type="search" id="sessionSearch" placeholder="Search user/assistant content…" aria-label="Search sessions by user and assistant prose" enterkeyhint="search">
+                        <button id="sessionSearchBtn" type="button" title="Search sessions">Search</button>
+                        <button id="clearSessionSearchBtn" type="button" class="clear-btn" title="Clear search" aria-label="Clear search">×</button>
+                    </div>
+                </div>
+                <label class="field"><span class="filter-label">Machine</span>
+                    <select id="machineSelect"><option value="">All machines</option></select></label>
+                <label class="field"><span class="filter-label">Source</span>
+                    <select id="sourceSelect"><option value="">All sources</option></select></label>
+                <label class="field"><span class="filter-label">Project</span>
+                    <select id="projectSelect"><option value="">All projects</option></select></label>
+                <div class="field field-dates">
+                    <span class="filter-label">Updated</span>
+                    <div class="date-range">
+                        <select id="datePreset" aria-label="Quick date range"><option value="">Any time</option><option value="1">Today</option>
+                            <option value="7">Last 7 days</option><option value="30">Last 30 days</option><option value="90">Last 90 days</option></select>
+                        <input type="date" id="dateFrom" aria-label="Updated from"><span aria-hidden="true">–</span><input type="date" id="dateTo" aria-label="Updated until">
+                    </div>
                 </div>
             </div>
-            <div class="machine-summary" id="machineSummary" aria-live="polite"></div>
-            <div class="sync-status" id="sessionSearchStatus" role="status" aria-live="polite"></div>
-            <button id="resetSearchScopeBtn" class="scope-reset" hidden>Search all sources/projects</button>
-            <div class="sync-status" id="syncStatus" role="status">Local history only. Click Reload to import.</div>
+            <div class="machine-summary" id="machineSummary" aria-label="Machines"></div>
+            <div class="list-status">
+                <div class="sync-status" id="sessionSearchStatus" role="status" aria-live="polite"></div>
+                <button id="resetSearchScopeBtn" type="button" class="scope-reset" hidden>Clear source/project</button>
+            </div>
+            <div class="sync-status" id="syncStatus" role="status" hidden>Cloud archive · uploaded by local servers.</div>
             <details id="syncIssues" class="sync-status" hidden><summary>Sync issues</summary><pre id="syncIssueText"></pre></details>
             <div class="panel-content">
                 <div id="sessionList" class="session-list">
-                    <div class="loading">Loading sessions...</div>
+                    <div class="loading">Loading sessions</div>
                 </div>
             </div>
-        </div>
+        </section>
 
-        <!-- Resizer between left and middle -->
         <div class="resizer" data-direction="left"></div>
 
-        <!-- Middle Panel: Conversation History -->
-        <div class="panel middle-panel">
+        <!-- Conversation -->
+        <section class="panel middle-panel" aria-label="Conversation">
             <div class="panel-header">
                 <h2 id="conversationTitle">Conversation</h2>
                 <span id="loadedCount" class="message-count"></span>
@@ -58,43 +78,39 @@
                 <select id="branchSelect" disabled aria-label="Conversation branch">
                     <option value="">All records</option><option value="active">Current saved branch</option>
                 </select>
-                <div class="filter-label">Filter:</div>
-                <div class="filter-tags" id="filterTags">
-                    <!-- Filter tags will be dynamically added here -->
-                </div>
+                <div class="filter-tags" id="filterTags" aria-label="Message types"></div>
                 <div class="uuid-search">
-                    <input type="text" id="uuidSearch" placeholder="Find in this session’s loaded messages…" title="This searches only loaded messages. Use the left search box to find sessions globally." />
-                    <button id="clearUuidBtn" class="clear-btn" title="Clear search">×</button>
+                    <input type="search" id="uuidSearch" placeholder="Find in loaded messages…" title="Searches only the loaded messages of this session" enterkeyhint="search">
+                    <button id="clearUuidBtn" type="button" class="clear-btn" title="Clear" aria-label="Clear">×</button>
                 </div>
             </div>
             <div class="panel-content">
                 <div id="conversationHistory" class="conversation-history">
-                    <div class="empty-state">
-                        <p>Select a session from the left to view conversation history</p>
-                    </div>
+                    <div class="empty-state"><p>Select a session to view its conversation</p></div>
                 </div>
+                <button id="loadMoreBtn" type="button" class="load-more" hidden>Load next 2000 records</button>
             </div>
-            <button id="loadMoreBtn" class="load-more" hidden>Load next 2000 records</button>
-        </div>
+        </section>
 
-        <!-- Resizer between middle and right -->
         <div class="resizer" data-direction="right"></div>
 
-        <!-- Right Panel: Message Details -->
-        <div class="panel right-panel">
+        <!-- Message details -->
+        <section class="panel right-panel" aria-label="Message details">
             <div class="panel-header">
                 <h2>Message Details</h2>
             </div>
             <div class="panel-content">
                 <div id="messageDetails" class="message-details">
-                    <div class="empty-state">
-                        <p>Click a message to view details</p>
-                    </div>
+                    <div class="empty-state"><p>Select a message to view details</p></div>
                 </div>
             </div>
-        </div>
-    </div>
+        </section>
+    </main>
 
-    <script src="static/js/app.js" type="module"></script>
+    <!--CONSOLE-->
+
+    <script src="/static/js/app.js" type="module"></script>
+    <script src="/cloud-assets/layout.js" type="module"></script>
+    <script src="/cloud-assets/control.js" type="module"></script>
 </body>
 </html>

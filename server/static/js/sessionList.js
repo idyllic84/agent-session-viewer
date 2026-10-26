@@ -19,7 +19,7 @@ export class SessionListView {
     render(sessions) {
         this.sessions = sessions.filter(session => (session.userMessageCount ?? session.metadata?.userMessageCount ?? 0) > 0 && session.metadata?.relationship !== 'subagent');
         this.container.innerHTML = this.sessions.length ? this.sessions.map(session => this.renderSessionItem(session)).join('')
-            : '<div class="empty-state"><p>No sessions found. Click Reload to import local history.</p></div>';
+            : '<div class="empty-state"><p>No sessions match the current filters.</p></div>';
         this.selectSessionUI(this.selectedId);
     }
 

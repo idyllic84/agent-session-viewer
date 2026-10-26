@@ -1,16 +1,44 @@
-<details class="sync-status cloud-console" id="cloudConsole"><summary>Cloud console · API keys &amp; password</summary>
-<div class="cloud-grid">
-<section><h3>API keys</h3>
-<p class="hint"><b>Upload</b>: one per local computer — paste it with this cloud address into the local server's console; its name identifies that machine.
-<b>Agent</b>: read-only API for an analysis agent — list sessions, session metadata, paged messages under <code>/agent/v1/*</code> (no upload, no console). A key is shown only once.</p>
-<label>Type <select id="keyKind"><option value="upload">Upload (one computer)</option><option value="agent">Agent (read-only API)</option></select></label>
-<label>Name <input id="keyName" maxlength="160" placeholder="e.g. work laptop / analysis notebook"></label>
-<label>Expires after (days, optional) <input id="keyExpiry" type="number" min="1" max="3650"></label>
-<button id="createKey">Generate API key</button>
-<pre id="newKey" aria-live="polite"></pre>
-<div id="keyList"></div></section>
-<section><h3>Owner password</h3>
-<label>Current password <input id="currentPassword" type="password" autocomplete="current-password"></label>
-<label>New password (12+ characters) <input id="newPassword" type="password" autocomplete="new-password"></label>
-<button id="changePassword">Change password</button> <button id="logout" class="secondary">Sign out</button></section>
-</div><div id="cloudError" role="status" aria-live="polite"></div></details>
+<div id="consoleSheet" class="sheet" role="dialog" aria-modal="true" aria-labelledby="consoleTitle" hidden>
+    <div class="sheet-backdrop" data-close></div>
+    <div class="sheet-panel">
+        <header class="sheet-header">
+            <h2 id="consoleTitle">Console</h2>
+            <button id="consoleClose" type="button" class="icon-close" aria-label="Close console" data-close>✕</button>
+        </header>
+        <div class="sheet-body">
+            <section class="card" aria-labelledby="keysTitle">
+                <h3 id="keysTitle">API keys</h3>
+                <p class="hint"><b>Upload</b>: one per computer — paste it with this cloud address into that computer's local console;
+                    the key name is the machine name shown on this page.
+                    <b>Agent</b>: read-only API for an analysis agent under <code>/agent/v1/*</code> (list sessions, metadata, paged messages).
+                    Keys are shown only once.</p>
+                <div class="form-grid">
+                    <label>Type
+                        <select id="keyKind"><option value="upload">Upload (one computer)</option><option value="agent">Agent (read-only API)</option></select></label>
+                    <label>Name
+                        <input id="keyName" maxlength="160" placeholder="e.g. work laptop" autocomplete="off"></label>
+                    <label>Expires after days (optional)
+                        <input id="keyExpiry" type="number" min="1" max="3650" inputmode="numeric"></label>
+                </div>
+                <button id="createKey" type="button" class="primary">Generate API key</button>
+                <div id="newKeyBox" class="new-key" hidden>
+                    <pre id="newKey" aria-live="polite"></pre>
+                    <button id="copyKey" type="button">Copy key</button>
+                </div>
+                <div id="keyList" class="key-list"></div>
+            </section>
+            <section class="card" aria-labelledby="passwordTitle">
+                <h3 id="passwordTitle">Owner password</h3>
+                <div class="form-grid">
+                    <label>Current password <input id="currentPassword" type="password" autocomplete="current-password"></label>
+                    <label>New password (12+ characters) <input id="newPassword" type="password" autocomplete="new-password"></label>
+                </div>
+                <div class="button-row">
+                    <button id="changePassword" type="button" class="primary">Change password</button>
+                    <button id="logout" type="button" class="secondary">Sign out</button>
+                </div>
+            </section>
+        </div>
+        <div id="cloudError" class="sheet-status" role="status" aria-live="polite"></div>
+    </div>
+</div>
