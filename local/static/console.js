@@ -23,6 +23,8 @@ const HINTS = {
     CLOUD_INSTANCE_CHANGED: 'This address now serves a different cloud. Test and Save the connection again.',
     TLS_FAILED: 'The HTTPS certificate of the cloud address could not be verified.',
     TOO_LARGE: 'One change is larger than the cloud request limit. Raise VIEWER_MAX_REQUEST_MIB on the cloud.',
+    STORAGE_FULL: 'The cloud ran out of storage or temporary space. Nothing was committed; ask the cloud owner to free space, then Sync again.',
+    DATABASE_ERROR: 'The cloud database reported an error. Nothing was committed; check the cloud log, then Sync again.',
     NO_CREDENTIAL: 'The stored API key is missing. Paste the key again and Save.',
 };
 const explain = error => error ? `${HINTS[error.code] || error.message} [${error.code}]` : '';

@@ -3,9 +3,9 @@
 * Runs only when the console asks; no timer, watcher, polling or heartbeat.
 * The cloud's committed sequence is re-read at the start of every run.
 * High-water mark H is fixed per run; changes imported meanwhile wait.
-* Each batch = contiguous, complete commit groups, sized by actual JSON bytes.
-  Only a single group larger than the cloud request limit is split (at change
-  boundaries); individual changes are never truncated.
+* Each batch = contiguous commit groups, sized by actual JSON bytes (~1 MiB).
+  A single group larger than the batch target is split at change boundaries
+  (e.g. the first import of a huge session); changes are never truncated.
 * The batch range/hash/idempotency key is persisted BEFORE it is sent, and the
   body is rebuilt byte-for-byte from the immutable change log on retry.
 """
@@ -179,9 +179,9 @@ class Uploader:
         return {'seq': row['seq'], 'op': row['op'], 'sessionId': row['sessionId'], 'data': row['data']}
 
     def _through(self, ack, high):
-        """Choose the batch end by actual JSON bytes. Complete commit groups only;
-        a single group larger than the cloud request limit is cut at a change
-        boundary. Individual changes are never truncated."""
+        """Choose the batch end by actual JSON bytes. Whole commit groups when they
+        fit; a first group larger than the target is cut at a change boundary.
+        Individual changes are never truncated (one may exceed the target alone)."""
         limit = self.max_request - 64 * 1024; target = min(self.batch_bytes, limit)
         size = 200; seq = ack + 1; through = None
         while seq <= high:
@@ -190,8 +190,8 @@ class Uploader:
                 weight = len(canonical(self._change(row)).encode('utf-8')) + 1
                 if through is not None and size + group + weight > target:
                     return through                 # next group does not fit: send what we have
-                if through is None and group > 80 and group + weight > limit:
-                    return row['seq'] - 1          # oversized first group: split here
+                if through is None and group > 80 and group + weight > target:
+                    return row['seq'] - 1          # oversized first group: split at the target
                 group += weight
             size += group; through = end; seq = end + 1
             if size >= target:

@@ -70,7 +70,9 @@ class CloudClient:
                     error = value.get('error', {}) if isinstance(value, dict) else {}
                     code = error.get('code', 'HTTP_ERROR') if isinstance(error, dict) else 'HTTP_ERROR'
                     message = error.get('message', 'Cloud request failed') if isinstance(error, dict) else 'Cloud request failed'
-                    if response.status_code not in (429, 500, 502, 503, 504) or attempt == attempts - 1 or time.monotonic() >= deadline:
+                    explicit = error.get('retryable') if isinstance(error, dict) else None
+                    transient = response.status_code in (429, 500, 502, 503, 504) and explicit is not False
+                    if not transient or attempt == attempts - 1 or time.monotonic() >= deadline:
                         problem = Problem(code, message, response.status_code)
                         problem.details = error if isinstance(error, dict) else {}
                         raise problem

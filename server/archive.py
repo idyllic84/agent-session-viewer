@@ -77,7 +77,7 @@ class AtomicDatabase(Database):
 
 
 class CloudArchive:
-    def __init__(self, path, *, max_request=32 * 1024 * 1024):
+    def __init__(self, path, *, max_request=16 * 1024 * 1024):
         path = Path(path).resolve()
         if path.exists() and path.stat().st_size:
             probe = sqlite3.connect(path.as_uri() + '?mode=ro', uri=True)

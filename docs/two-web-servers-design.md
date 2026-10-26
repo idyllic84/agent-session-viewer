@@ -361,9 +361,13 @@ client slot 是云端授权命名空间，dataset UUID 是本地数据库数据�
 - 从本地 change log 的已确认位置后取**连续** groups，不能越过未确认 group。
 - 同一 POST 可以包含多个 session/来源的变更，因为来源采集早已独立完成入库；
   上传阶段不再受“正在扫描哪个 Agent 文件”的限制。
-- 保持必要 group 原子性；单个 group 超目标可单独一批，不截断命令或参数。
-- 服务端广告单请求硬上限（初版可沿用 32 MiB）。超过时明确报错；优先在本地
-  采集/快照 bootstrap 按安全单位拆小，不恢复 chunk/seal 上传包协议。
+- 能放进目标大小的 group 整组发送；**超过目标大小的单个 group 按变更边界拆分**（实施修订：
+  原设计“超目标可单独一批”导致 4 万条消息的首次导入一次发送 14–33 MB，在小规格云端 VM 上
+  耗尽临时空间）。不截断命令或参数；单条变更本身可以超过目标。
+- 服务端单请求硬上限 16 MiB（在 Cloudflare 免费/Pro 100 MB 与 100 秒源站超时之内），只为
+  单条超大消息兜底；超过时明确报错，不恢复 chunk/seal 上传包协议。
+- 云端 SQLite 与 Waitress 的大临时文件放在数据卷（`/data/tmp`），不放内存 tmpfs；空间不足返回
+  不可重试的 507 `STORAGE_FULL`，只有锁冲突返回可重试的 503。
 - 固定批次 `fromSeq/toSeq/group IDs/canonical payload hash/Idempotency-Key` 到本地
   pending manifest。变更本身不可变，因此可精确重建，无需再复制整个文件或数据库。
 - 持久化 pending manifest 后才发送 HTTP；后续源变化不能改用同 key 发送新内容。

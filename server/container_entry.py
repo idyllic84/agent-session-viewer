@@ -53,7 +53,7 @@ def settings(environ=None):
     session = Path(env.get('VIEWER_SESSION_KEY_FILE', str(data / 'session.key')))
     password = Path(env['VIEWER_ADMIN_PASSWORD_FILE']) if env.get('VIEWER_ADMIN_PASSWORD_FILE') else None
     port = int(env.get('VIEWER_PORT', '8080')); threads = int(env.get('VIEWER_THREADS', '8'))
-    maximum = int(env.get('VIEWER_MAX_REQUEST_MIB', '32')) * 1024 * 1024
+    maximum = int(env.get('VIEWER_MAX_REQUEST_MIB', '16')) * 1024 * 1024
     if not 1 <= port <= 65535 or not 1 <= threads <= 64 or maximum < 1024 * 1024:
         raise ValueError('Invalid port, threads or request limit')
     return Settings(data, database, session, password, origin, local, port, threads, maximum, session_external)
@@ -92,9 +92,27 @@ def bootstrap_password(archive, config, log=print):
     log(f'[cloud] generated an initial owner password in {initial} (contents not logged); change it after signing in')
 
 
+def prepare_temp_dir(environ=None):
+    """Create the disk-backed temp dir (SQLITE_TMPDIR/TMPDIR) and clear leftovers.
+
+    SQLite and Waitress delete their temporary files themselves; anything left
+    here is from a crashed process and is safe to remove at startup.
+    """
+    env = os.environ if environ is None else environ
+    temp = env.get('SQLITE_TMPDIR') or env.get('TMPDIR')
+    if not temp:
+        return None
+    path = Path(temp); path.mkdir(mode=0o700, parents=True, exist_ok=True)
+    for child in path.iterdir():
+        if child.is_file():
+            child.unlink(missing_ok=True)
+    return path
+
+
 def application(environ=None, log=print):
     config = settings(environ)
     config.data_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
+    prepare_temp_dir(environ)
     session = private_secret(config.session_file, external=config.session_external)
     archive = CloudArchive(config.database, max_request=config.max_request)
     bootstrap_password(archive, config, log)

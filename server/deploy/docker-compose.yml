@@ -19,7 +19,11 @@ services:
       VIEWER_PUBLIC_ORIGIN: ${VIEWER_PUBLIC_ORIGIN:?Set the public HTTPS origin in server/deploy/.env}
       VIEWER_LOCAL_HTTP: "0"
       VIEWER_DATA_DIR: /data
-      VIEWER_MAX_REQUEST_MIB: ${VIEWER_MAX_REQUEST_MIB:-32}
+      VIEWER_MAX_REQUEST_MIB: ${VIEWER_MAX_REQUEST_MIB:-16}
+      # Large temporary files (SQLite statement journals/sorts, Waitress request-body
+      # buffers) go to the disk-backed data volume, not the small in-memory /tmp.
+      SQLITE_TMPDIR: /data/tmp
+      TMPDIR: /data/tmp
     volumes:
       - viewer-cloud-data:/data
     networks: [backend]

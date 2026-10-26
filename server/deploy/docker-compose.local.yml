@@ -18,7 +18,11 @@ services:
       VIEWER_PUBLIC_ORIGIN: http://localhost:${VIEWER_LOCAL_PORT:-41880}
       VIEWER_LOCAL_HTTP: "1"
       VIEWER_DATA_DIR: /data
-      VIEWER_MAX_REQUEST_MIB: ${VIEWER_MAX_REQUEST_MIB:-32}
+      VIEWER_MAX_REQUEST_MIB: ${VIEWER_MAX_REQUEST_MIB:-16}
+      # Large temporary files (SQLite statement journals/sorts, Waitress request-body
+      # buffers) go to the disk-backed data volume, not the small in-memory /tmp.
+      SQLITE_TMPDIR: /data/tmp
+      TMPDIR: /data/tmp
     ports:
       - "127.0.0.1:${VIEWER_LOCAL_PORT:-41880}:8080"
     volumes:

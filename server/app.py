@@ -110,11 +110,22 @@ def create_app(archive, *, session_secret, public_origin, allow_http=False):
         elif isinstance(exc, sqlite3.IntegrityError):
             status, code, message = 422, 'INTEGRITY_CONSTRAINT', 'Constraint failed; nothing was committed'
         elif isinstance(exc, sqlite3.OperationalError):
-            status, code, message = 503, 'ARCHIVE_BUSY', 'Archive unavailable; retry the same request'
+            # Only lock contention is transient. Full storage and other database
+            # errors are deterministic: retrying the same batch cannot succeed.
+            name = getattr(exc, 'sqlite_errorname', '') or ''
+            text = str(exc).lower()
+            if name.startswith(('SQLITE_BUSY', 'SQLITE_LOCKED')) or 'locked' in text or 'busy' in text:
+                status, code, message = 503, 'ARCHIVE_BUSY', 'Archive is busy; retry the same request'
+            elif name.startswith('SQLITE_FULL') or 'full' in text:
+                status, code, message = 507, 'STORAGE_FULL', 'Cloud storage or temporary space is full; nothing was committed'
+            else:
+                status, code, message = 500, 'DATABASE_ERROR', 'Cloud database error; nothing was committed'
+            app.logger.error('SQLite %s on %s %s: %s', name or 'error', request.method, request.path, exc)
         else:
             app.logger.exception('Cloud operation failed')
             status, code, message = 500, 'INTERNAL_ERROR', 'Operation failed; retry the same request'
-        response = jsonify(error={'code': code, 'message': message, 'retryable': status in (429, 500, 502, 503),
+        retryable = status in (429, 502, 503) or (status == 500 and code == 'INTERNAL_ERROR')
+        response = jsonify(error={'code': code, 'message': message, 'retryable': retryable,
                                   'requestId': secrets.token_hex(8)})
         if status in (429, 503):
             response.headers['Retry-After'] = '2'
@@ -342,7 +353,7 @@ def main():
     parser.add_argument('--session-key-file', required=True, help='Random browser-session signing secret (>=32 chars)')
     parser.add_argument('--public-origin', required=True)
     parser.add_argument('--host', default='127.0.0.1'); parser.add_argument('--port', type=int, default=8080)
-    parser.add_argument('--max-request-mib', type=int, default=32, help='Explicit maximum for one batch request')
+    parser.add_argument('--max-request-mib', type=int, default=16, help='Explicit maximum for one batch request')
     parser.add_argument('--allow-http-loopback', action='store_true')
     parser.add_argument('--development', action='store_true', help='Loopback-only development server instead of Waitress')
     args = parser.parse_args()

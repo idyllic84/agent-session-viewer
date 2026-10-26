@@ -13,8 +13,8 @@
 | `.env.example` | VM HTTPS 域名与 Tunnel token 模板 |
 
 镜像：Debian trixie 官方签名包（Python 3.13、Flask、Waitress），不关闭 TLS/签名校验。
-UID/GID 10001:10001、只读根文件系统，仅 `/data` 与 tmpfs 可写；日志轮转；健康检查
-不暴露数据。`local/`、测试、Git、数据库、历史、密钥、`.env` 均不进镜像。
+UID/GID 10001:10001、只读根文件系统，仅 `/data` 与一个 64 MB 的 `/tmp`（tmpfs，内存）可写；
+日志轮转；健康检查不暴露数据。`local/`、测试、Git、数据库、历史、密钥、`.env` 均不进镜像。
 
 卷 `/data` 内容：
 
@@ -23,6 +23,13 @@ UID/GID 10001:10001、只读根文件系统，仅 `/data` 与 tmpfs 可写；日
 | `cloud-v6.db` | 云端归档（新协议默认文件名；旧 `cloud.db` 不会被打开或修改） |
 | `session.key` | 浏览器会话签名密钥，首次启动生成，0600 |
 | `initial-admin-password` | 仅在未提供密码文件时生成的初始 Owner 密码；在控制台改密码后删除 |
+| `tmp/` | 大临时文件目录（`SQLITE_TMPDIR`、`TMPDIR`）：SQLite 语句日志/排序、Waitress 请求体缓冲；每次启动清空 |
+
+**临时空间与请求大小：** SQLite 在大事务中的临时文件随改动数据量增长，Waitress 会把超过
+512 KB 的请求体写入临时文件。两者都放在磁盘上的 `/data/tmp`，不占内存，也不受 64 MB `/tmp`
+限制（tmpfs 计入容器内存）。客户端按约 1 MiB 组批；`VIEWER_MAX_REQUEST_MIB` 默认 16，
+远低于 Cloudflare 的 100 MB 请求体上限，并让单个请求能在 Cloudflare 的 100 秒源站超时内完成。
+空间不足返回 507 `STORAGE_FULL`（不重试）；数据库锁冲突返回 503 `ARCHIVE_BUSY`（可重试）。
 
 ## 一、本机直连
 
@@ -120,8 +127,8 @@ docker compose --env-file server/deploy/.env -f server/deploy/docker-compose.yml
 - 可对 `/auth/login` POST 做边缘限流（应用自身也限流）。
 - 不要对 `/ingest/v1/*`、`/agent/v1/*` 加 JS/CAPTCHA challenge 或交互式 Access：它们是机器
   客户端，只携带 API Key。如需 Access，只保护网页路径。
-- 默认批次约 1 MiB，应用请求上限 32 MiB（`VIEWER_MAX_REQUEST_MIB`），需与套餐的
-  body/timeout 限制一致；超限请求返回 413 且不会被截断。
+- 默认批次约 1 MiB，应用请求上限 16 MiB（`VIEWER_MAX_REQUEST_MIB`），在 Cloudflare 免费/Pro
+  套餐 100 MB 请求体与 100 秒源站超时之内；超限请求返回 413 且不会被截断。
 - Tunnel 不替代应用的密码和 API Key。
 
 ## 三、备份

@@ -163,6 +163,45 @@ class LocalAppTests(unittest.TestCase):
         self.cloud.gate = None
         self.assertEqual(self.service.uploader.run_now()['ackSeq'], late_seq)
 
+    def test_a_group_larger_than_the_batch_target_is_split_even_under_a_large_cloud_limit(self):
+        # Regression: a 40k-message first import used to go out as one 14-33 MB request.
+        rows = [{'type': 'user', 'sessionId': 'huge', 'uuid': str(i), 'timestamp': TS, 'message': {'content': f'{i} ' + 'z' * 900}} for i in range(150)]
+        (self.source / 'huge.jsonl').write_text(''.join(json.dumps(r) + chr(10) for r in rows))
+        self.service.import_history(); self.connect()
+        self.cloud.max_request = 32 * 1024 * 1024; self.service.uploader.batch_bytes = 16 * 1024
+        state = self.service.uploader.run_now()
+        self.assertEqual(state['state'], 'complete', state); self.assertEqual(self.cloud.ack, self.service.archive.last_seq())
+        biggest_change = 2 * 1024
+        self.assertTrue(all(len(b) <= 16 * 1024 + biggest_change for b in self.cloud.bodies), [len(b) for b in self.cloud.bodies])
+        ids = [g['id'] for b in self.cloud.bodies for g in json.loads(b)['groups']]
+        self.assertGreater(len(ids), len(set(ids)), 'the oversized commit group spans several POSTs')
+
+    def test_cloud_client_does_not_retry_errors_the_server_marks_permanent(self):
+        from local.cloud import CloudClient
+        calls = []
+
+        class Response:
+            def __init__(self, status, code, retryable):
+                self.status_code = status; self.ok = False; self.headers = {}
+                self.body = {'error': {'code': code, 'message': code, 'retryable': retryable}}
+            def json(self): return self.body
+            def close(self): pass
+
+        class Session:
+            def __init__(self, responses): self.responses = responses
+            def request(self, *args, **kwargs):
+                calls.append(1); return self.responses.pop(0)
+        client = CloudClient('https://cloud.example', KEY)
+        client._thread.http = Session([Response(507, 'STORAGE_FULL', False)])
+        with self.assertRaises(Problem) as error:
+            client.send(b'{}', 'k')
+        self.assertEqual((error.exception.code, len(calls)), ('STORAGE_FULL', 1))
+        calls.clear(); client._thread.http = Session([Response(503, 'ARCHIVE_BUSY', True), Response(507, 'STORAGE_FULL', False)])
+        from unittest.mock import patch
+        with patch('local.cloud.time.sleep'), self.assertRaises(Problem) as error:
+            client.send(b'{}', 'k')
+        self.assertEqual((error.exception.code, len(calls)), ('STORAGE_FULL', 2), 'busy is retried, then the permanent error stops')
+
     def test_only_a_group_larger_than_the_cloud_limit_is_split_at_change_boundaries(self):
         rows = [{'type': 'user', 'sessionId': 'huge', 'uuid': str(i), 'timestamp': TS, 'message': {'content': f'{i} ' + 'z' * 900}} for i in range(150)]
         (self.source / 'huge.jsonl').write_text(''.join(json.dumps(r) + chr(10) for r in rows))

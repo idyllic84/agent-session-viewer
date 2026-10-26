@@ -66,6 +66,20 @@ class DeploymentTests(unittest.TestCase):
         self.assertEqual(client.get('/', base_url=ORIGIN).status_code, 302)
         self.assertEqual(client.get('/healthz', base_url='http://evil.test').status_code, 403)
 
+    def test_large_temporary_files_live_on_the_data_volume_and_requests_are_capped(self):
+        from server.container_entry import prepare_temp_dir
+        temp = self.root / 'data' / 'tmp'
+        app, config = self.boot({**self.env, 'SQLITE_TMPDIR': str(temp), 'TMPDIR': str(temp)})
+        self.assertTrue(temp.is_dir())
+        self.assertEqual(config.max_request, 16 * 1024 * 1024); self.assertEqual(app.config['MAX_CONTENT_LENGTH'], 16 * 1024 * 1024)
+        (temp / 'etilqs_leftover').write_bytes(b'x')
+        prepare_temp_dir({'SQLITE_TMPDIR': str(temp)})
+        self.assertEqual(list(temp.iterdir()), [], 'leftovers from a crashed process are removed at startup')
+        for name in ('docker-compose.yml', 'docker-compose.local.yml'):
+            compose = (Path(__file__).resolve().parents[1] / 'deploy' / name).read_text()
+            self.assertIn('SQLITE_TMPDIR: /data/tmp', compose); self.assertIn('TMPDIR: /data/tmp', compose)
+            self.assertIn('VIEWER_MAX_REQUEST_MIB:-16', compose)
+
     def test_https_origin_uses_secure_cookies(self):
         app, _ = self.boot({**self.env, 'VIEWER_PUBLIC_ORIGIN': 'https://history.example.com', 'VIEWER_LOCAL_HTTP': '0'})
         self.assertTrue(app.config['SESSION_COOKIE_SECURE'])

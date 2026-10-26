@@ -189,6 +189,24 @@ class CloudAppTests(unittest.TestCase):
         reopened = CloudArchive(path)
         self.assertEqual(reopened.authenticate(self.key, 'upload')['kind'], 'upload')
 
+    def test_database_errors_are_classified_and_logged_without_payload(self):
+        import sqlite3
+        from unittest.mock import patch
+        self.ingest('POST', '/ingest/v1/bind', json={'datasetId': DATASET})
+        value = batch(0, [('session', 'claude:s', session('claude:s'))])
+        cases = [(sqlite3.OperationalError('database or disk is full'), 507, 'STORAGE_FULL', False),
+                 (sqlite3.OperationalError('database is locked'), 503, 'ARCHIVE_BUSY', True),
+                 (sqlite3.OperationalError('disk I/O error'), 500, 'DATABASE_ERROR', False)]
+        for exc, status, code, retryable in cases:
+            with self.subTest(code=code), patch.object(CloudArchive, 'commit', side_effect=exc), \
+                    self.assertLogs(self.app.logger, 'ERROR') as logs:
+                response = self.ingest('POST', '/ingest/v1/batches', data=json.dumps(value),
+                                       headers={'Content-Type': 'application/json', 'Idempotency-Key': code})
+                self.assertEqual((response.status_code, response.json['error']['code'], response.json['error']['retryable']),
+                                 (status, code, retryable))
+                self.assertIn(str(exc), logs.output[0]); self.assertNotIn('claude:s', logs.output[0])
+        self.assertEqual('Retry-After' in response.headers, False)
+
     def test_no_task_queue_or_heartbeat_routes_exist(self):
         rules = {rule.rule for rule in self.app.url_map.iter_rules()}
         self.assertFalse(any(word in rule for rule in rules for word in ('jobs', 'heartbeat', 'devices', '/sync/v1')))
