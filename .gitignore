@@ -51,3 +51,7 @@ server/state/
 local/state/
 server/deploy/secrets/
 server/deploy/artifacts/
+
+# Cloudflare tunnel token files people drop next to the deployment
+**/token.cf
+*.cf
